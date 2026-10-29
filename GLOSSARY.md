@@ -19,7 +19,7 @@ _Avoid_: security key, FIDO token
 ## Identity
 
 **Subject**:
-The stable, provider-issued identifier of a person at the Identity Provider (the `sub` claim).
+The stable identifier of a person at the Identity Provider: the `sub` claim, qualified by the issuer that issued it.
 _Avoid_: user id, external id
 
 **Linked Identity**:
@@ -29,10 +29,6 @@ _Avoid_: mapping, binding, account link
 **Just-in-time Provisioning**:
 Creating a Jellyfin user, and its Linked Identity, at the first OIDC login of a Subject that has none.
 _Avoid_: auto-registration, sign-up
-
-**Username Adoption**:
-Forming a Linked Identity between a new Subject and a pre-existing Jellyfin user whose username matches; opt-in only.
-_Avoid_: auto-link, merge
 
 **Admin Group**:
 The Identity Provider group whose members are granted Jellyfin administrator rights, re-evaluated at every OIDC login.
