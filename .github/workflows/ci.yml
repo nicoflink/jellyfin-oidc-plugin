@@ -29,3 +29,26 @@ jobs:
             echo "::error::Plugin output bundles assemblies Jellyfin already provides"
             exit 1
           fi
+
+  e2e:
+    runs-on: ubuntu-24.04
+    env:
+      E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Build
+        run: dotnet build tests/Jellyfin.Plugin.OidcLogin.E2ETests -c Release
+      - name: Install Playwright Chromium
+        run: pwsh tests/Jellyfin.Plugin.OidcLogin.E2ETests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: End-to-end tests
+        run: dotnet test --project tests/Jellyfin.Plugin.OidcLogin.E2ETests -c Release --no-build
+      - name: Upload Playwright traces and container logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-artifacts
+          path: ${{ env.E2E_ARTIFACTS_DIR }}
+          if-no-files-found: ignore

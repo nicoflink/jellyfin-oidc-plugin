@@ -1,13 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- End-to-end tests (Testcontainers + Playwright) arrive with the E2E harness, #21. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" />
+    <PackageReference Include="Testcontainers" />
     <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Builds the Plugin and copies its DLL next to the tests; the fixture installs it into Jellyfin. -->
+    <ProjectReference Include="..\..\src\Jellyfin.Plugin.OidcLogin\Jellyfin.Plugin.OidcLogin.csproj" />
   </ItemGroup>
 
 </Project>
