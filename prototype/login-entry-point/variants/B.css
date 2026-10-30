@@ -1,0 +1,6 @@
+/* B: OIDC first. Depends on jellyfin-web class names (fragile across upgrades). */
+.readOnlyContent { display: flex; flex-direction: column; }
+.readOnlyContent .loginDisclaimerContainer { order: -1; margin-bottom: 1.5em; }
+.oidc-entry .button-submit { font-size: 1.2em; padding: 1em; }
+.oidc-or { text-align: center; opacity: .7; margin: 1em 0 0; }
+#divUsers { display: none; }

@@ -1,0 +1,3 @@
+/* C: quiet link. Only styles the Plugin's own class names (robust across upgrades). */
+.oidc-entry { text-align: center; opacity: .85; }
+.oidc-link { background: none; border: 0; padding: 0; color: #00a4dc; font: inherit; cursor: pointer; text-decoration: underline; }
