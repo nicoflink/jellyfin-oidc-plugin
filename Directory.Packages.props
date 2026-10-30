@@ -1,0 +1,21 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup Label="Jellyfin">
+    <PackageVersion Include="Jellyfin.Controller" Version="[12.4.0]" />
+    <PackageVersion Include="Jellyfin.Model" Version="[12.4.0]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Analyzers">
+    <PackageVersion Include="SerilogAnalyzer" Version="[0.15.0]" />
+    <PackageVersion Include="SmartAnalyzers.MultithreadingAnalyzer" Version="[1.1.31]" />
+    <PackageVersion Include="StyleCop.Analyzers" Version="[1.3.151-beta]" />
+  </ItemGroup>
+
+  <ItemGroup Label="Tests">
+    <PackageVersion Include="NSubstitute" Version="[6.2.0]" />
+    <PackageVersion Include="xunit.v3" Version="[4.0.2]" />
+  </ItemGroup>
+</Project>

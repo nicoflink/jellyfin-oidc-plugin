@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Build
+        run: dotnet build Jellyfin.Plugin.OidcLogin.slnx -c Release
+      - name: Unit tests
+        run: dotnet test --project tests/Jellyfin.Plugin.OidcLogin.Tests -c Release --no-build
+      - name: Publish plugin
+        run: dotnet publish src/Jellyfin.Plugin.OidcLogin -c Release -o artifacts/publish
+      - name: Check no host assemblies are bundled
+        # Jellyfin provides these; bundling them breaks the plugin at load time.
+        run: |
+          if ls artifacts/publish | grep -E '^(Microsoft\.Extensions\..*|System\.Text\.Json)\.dll$'; then
+            echo "::error::Plugin output bundles assemblies Jellyfin already provides"
+            exit 1
+          fi

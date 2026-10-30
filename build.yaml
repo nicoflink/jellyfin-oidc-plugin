@@ -1,0 +1,14 @@
+---
+name: "OIDC Login"
+guid: "d34c4da5-d189-4677-b1a5-b1ea1d0f1dbd"
+targetAbi: "12.4.0.0"
+framework: "net10.0"
+overview: "Sign in to Jellyfin through an OpenID Connect Identity Provider"
+description: >
+  Lets people sign in to the Jellyfin web UI through a single external
+  OpenID Connect Identity Provider (tested against PocketID, so passkeys
+  become the way into Jellyfin). Local Login keeps working.
+category: "Authentication"
+owner: "nicoflink"
+artifacts:
+- "Jellyfin.Plugin.OidcLogin.dll"

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Jellyfin.Plugin.OidcLogin/Jellyfin.Plugin.OidcLogin.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Jellyfin.Plugin.OidcLogin.Tests/Jellyfin.Plugin.OidcLogin.Tests.csproj" />
+    <Project Path="tests/Jellyfin.Plugin.OidcLogin.E2ETests/Jellyfin.Plugin.OidcLogin.E2ETests.csproj" />
+  </Folder>
+</Solution>

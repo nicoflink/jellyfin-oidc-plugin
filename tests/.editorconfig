@@ -1,0 +1,6 @@
+[*.cs]
+# Test classes and methods are self-describing; no XML docs required.
+dotnet_diagnostic.SA1600.severity = none
+dotnet_diagnostic.CS1591.severity = none
+# xUnit test classes must be public.
+dotnet_diagnostic.CA1515.severity = none
