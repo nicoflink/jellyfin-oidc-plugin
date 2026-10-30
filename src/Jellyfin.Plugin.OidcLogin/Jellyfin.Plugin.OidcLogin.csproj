@@ -8,6 +8,7 @@
   <ItemGroup>
     <PackageReference Include="Jellyfin.Controller" ExcludeAssets="runtime" />
     <PackageReference Include="Jellyfin.Model" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" />
   </ItemGroup>
 
 </Project>

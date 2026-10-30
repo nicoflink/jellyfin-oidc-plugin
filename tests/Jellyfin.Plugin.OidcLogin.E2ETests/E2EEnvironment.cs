@@ -107,23 +107,39 @@ public sealed class E2EEnvironment : IAsyncLifetime
         await pocketIdContainer.StartAsync(cancellationToken);
 
         JellyfinUrl = new Uri($"http://127.0.0.1:{pocketIdContainer.GetMappedPublicPort(JellyfinPort)}/");
-        _jellyfin = new ContainerBuilder(ContainerImages.Jellyfin)
-            .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{pocketIdContainer.Id}")
-            // The client's callback is registered without a port: PocketID matches loopback callbacks on any port (RFC 8252).
-            .WithResourceMapping(new FileInfo(Path.Combine(AppContext.BaseDirectory, "Jellyfin.Plugin.OidcLogin.dll")), "/config/plugins/OidcLogin/")
-            .Build();
+        var jellyfinBuilder = new ContainerBuilder(ContainerImages.Jellyfin)
+            .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{pocketIdContainer.Id}");
+        foreach (var artifact in BuildManifest.Artifacts)
+        {
+            jellyfinBuilder = jellyfinBuilder.WithResourceMapping(new FileInfo(Path.Combine(AppContext.BaseDirectory, artifact)), "/config/plugins/OidcLogin/");
+        }
+
+        _jellyfin = jellyfinBuilder.Build();
         await _jellyfin.StartAsync(cancellationToken);
 
         using (var jellyfin = new JellyfinServer(JellyfinUrl))
         {
             await jellyfin.WaitUntilStartupWizardIsReadyAsync(TimeSpan.FromMinutes(3), cancellationToken);
             await jellyfin.CompleteStartupWizardAsync(JellyfinAdminName, JellyfinAdminPassword, cancellationToken);
+            var adminToken = await jellyfin.AuthenticateAsync(JellyfinAdminName, JellyfinAdminPassword, cancellationToken);
+            await jellyfin.PostAsAdminAsync(
+                $"Plugins/{BuildManifest.PluginId}/Configuration",
+                new
+                {
+                    PublicJellyfinUrl = JellyfinUrl.ToString(),
+                    IssuerUrl = PocketIdUrl.ToString().TrimEnd('/'),
+                    ClientId = OidcClientId,
+                    ClientSecret = OidcClientSecret,
+                },
+                adminToken,
+                cancellationToken);
         }
 
         using (var pocketId = new PocketIdAdmin(PocketIdUrl, StaticApiKey))
         {
             var usersGroup = await pocketId.CreateGroupAsync(JellyfinUsersGroup, cancellationToken);
             var adminsGroup = await pocketId.CreateGroupAsync(JellyfinAdminsGroup, cancellationToken);
+            // The callback is registered without a port: PocketID matches loopback callbacks on any port (RFC 8252).
             await pocketId.CreateOidcClientAsync(OidcClientId, OidcClientSecret, new Uri("http://127.0.0.1/OidcLogin/Callback"), [usersGroup, adminsGroup], cancellationToken);
             await pocketId.CreateUserAsync(Alice, cancellationToken);
             await pocketId.SetUserGroupsAsync(Alice.Id, [usersGroup], cancellationToken);

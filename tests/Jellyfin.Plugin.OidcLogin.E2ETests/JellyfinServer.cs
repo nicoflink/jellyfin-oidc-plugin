@@ -73,6 +73,20 @@ internal sealed class JellyfinServer : IDisposable
         return await SendAsync(request, cancellationToken);
     }
 
+    /// <summary>
+    /// Posts <paramref name="body"/> as an admin, keeping its property names as declared: Jellyfin reads plugin
+    /// configuration case-sensitively.
+    /// </summary>
+    public async Task PostAsAdminAsync(string path, object body, string accessToken, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(path, UriKind.Relative))
+        {
+            Content = JsonContent.Create(body, options: JsonSerializerOptions.Default),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", $"MediaBrowser Token=\"{accessToken}\"");
+        await SendAsync(request, cancellationToken);
+    }
+
     public void Dispose() => _http.Dispose();
 
     private async Task<JsonElement> PostAsync(string path, object? body, CancellationToken cancellationToken)

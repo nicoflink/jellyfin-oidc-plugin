@@ -21,7 +21,13 @@ public class Plugin : BasePlugin<PluginConfiguration>
     public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)
         : base(applicationPaths, xmlSerializer)
     {
+        Instance = this;
     }
+
+    /// <summary>
+    /// Gets the loaded Plugin, through which services read the current configuration.
+    /// </summary>
+    public static Plugin? Instance { get; private set; }
 
     /// <inheritdoc />
     public override string Name => "OIDC Login";

@@ -12,8 +12,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Builds the Plugin and copies its DLL next to the tests; the fixture installs it into Jellyfin. -->
+    <!-- Builds the Plugin and copies it and its dependencies next to the tests. -->
     <ProjectReference Include="..\..\src\Jellyfin.Plugin.OidcLogin\Jellyfin.Plugin.OidcLogin.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The fixture installs the artifacts build.yaml lists, as a release would. -->
+    <None Include="..\..\build.yaml" Link="build.yaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -29,6 +29,12 @@ jobs:
             echo "::error::Plugin output bundles assemblies Jellyfin already provides"
             exit 1
           fi
+      - name: Check build.yaml lists every bundled assembly
+        # jprm zips only the listed artifacts; a missing dependency breaks the plugin at runtime.
+        run: |
+          diff <(ls artifacts/publish | grep -E '\.dll$' | sort) \
+               <(sed -n 's/^- "\(.*\.dll\)"$/\1/p' build.yaml | sort) \
+            || { echo "::error::build.yaml artifacts differ from the published assemblies"; exit 1; }
 
   e2e:
     runs-on: ubuntu-24.04

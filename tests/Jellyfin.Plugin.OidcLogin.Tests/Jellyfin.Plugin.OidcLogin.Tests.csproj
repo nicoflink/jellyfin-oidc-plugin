@@ -9,6 +9,7 @@
     <!-- The plugin excludes Jellyfin runtime assets (Jellyfin provides them); tests need them. -->
     <PackageReference Include="Jellyfin.Controller" />
     <PackageReference Include="Jellyfin.Model" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
     <PackageReference Include="NSubstitute" />
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
