@@ -30,6 +30,10 @@ _Avoid_: mapping, binding, account link
 Creating a Jellyfin user, and its Linked Identity, at the first OIDC login of a Subject that has none.
 _Avoid_: auto-registration, sign-up
 
+**Required Group**:
+The optional Identity Provider group a person must belong to for an OIDC Login to be accepted at all.
+_Avoid_: allowed group, access group
+
 **Admin Group**:
 The Identity Provider group whose members are granted Jellyfin administrator rights, re-evaluated at every OIDC login.
 _Avoid_: admin role, admin claim
