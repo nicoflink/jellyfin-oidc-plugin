@@ -1,0 +1,229 @@
+<!-- PROTOTYPE — throwaway. Three variants of the OIDC Login config page, switchable from the
+     floating bar or with &variant=A|B|C in the URL. Nothing is saved: all state is in memory,
+     Test connection / Link / Unlink / Save are simulated and logged in the state panel. -->
+<div id="OidcLoginConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select">
+  <div data-role="content">
+    <div class="content-primary">
+      <div id="oidcProtoRoot"></div>
+    </div>
+  </div>
+  <div id="oidcProtoBar" style="position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:9999;background:#ff2d95;color:#fff;border-radius:999px;padding:6px 10px;display:flex;gap:10px;align-items:center;box-shadow:0 4px 16px rgba(0,0,0,.5);font-weight:bold;font-family:sans-serif">
+    <button type="button" data-proto="prev" style="all:unset;cursor:pointer;padding:0 8px">&larr;</button>
+    <span id="oidcProtoLabel"></span>
+    <button type="button" data-proto="next" style="all:unset;cursor:pointer;padding:0 8px">&rarr;</button>
+    <button type="button" data-proto="state" style="all:unset;cursor:pointer;padding:0 8px;font-weight:normal;text-decoration:underline">state</button>
+  </div>
+  <pre id="oidcProtoState" style="display:none;position:fixed;right:16px;bottom:70px;z-index:9999;max-width:420px;max-height:60vh;overflow:auto;background:#111;color:#9f9;border:2px solid #ff2d95;padding:10px;font-size:12px;white-space:pre-wrap"></pre>
+
+  <script type="text/javascript">
+    (function () {
+      var page = document.querySelector('#OidcLoginConfigPage');
+      var VARIANTS = { A: 'Long form', B: 'Tabs', C: 'Guided setup' };
+      var KEYS = Object.keys(VARIANTS);
+
+      // ---- in-memory state (PROTOTYPE: no persistence) ----
+      var S = {
+        settings: {
+          issuerUrl: 'https://id.example.com', clientId: 'jellyfin', clientSecret: '', scopes: 'openid profile groups',
+          usernameClaim: 'preferred_username', groupsClaim: 'groups', adminGroup: 'jellyfin-admins', requiredAmr: '',
+          jitProvisioning: true, publicUrl: '', showLoginButton: false
+        },
+        savedIssuer: 'https://id.example.com',
+        links: [],
+        users: [],
+        log: [],
+        tab: 'connection',
+        open: { 1: true }
+      };
+
+      function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
+      function log(msg) { S.log.unshift(new Date().toLocaleTimeString() + '  ' + msg); S.log = S.log.slice(0, 15); }
+      function callbackUrl() { var u = S.settings.publicUrl.trim().replace(/\/+$/, ''); return u ? u + '/OidcLogin/Callback' : ''; }
+      function missing() {
+        var m = [];
+        if (!S.settings.issuerUrl.trim()) m.push('Issuer URL');
+        if (!S.settings.clientId.trim()) m.push('Client ID');
+        if (!S.settings.clientSecret.trim()) m.push('Client secret');
+        if (!S.settings.publicUrl.trim()) m.push('Public Jellyfin URL');
+        return m;
+      }
+      function buttonStatus() {
+        var m = missing();
+        if (!S.settings.showLoginButton) return 'Sign-in button: hidden (turned off)';
+        return m.length ? 'Sign-in button: hidden until configured — missing ' + m.join(', ') : 'Sign-in button: shown on the web login page';
+      }
+      function issuerWarning() {
+        return S.links.length && S.settings.issuerUrl.trim() !== S.savedIssuer
+          ? '<div style="border-left:4px solid #e5a00d;padding:.5em 1em;margin:.5em 0;background:rgba(229,160,13,.12)">Changing the Issuer URL orphans all ' + S.links.length + ' Linked Identities. Those people will be treated as new at their next sign-in.</div>'
+          : '';
+      }
+      function userName(id) { var u = S.users.filter(function (x) { return x.Id === id; })[0]; return u ? u.Name : id; }
+
+      // ---- shared field builders (variants own the layout) ----
+      function text(key, label, desc, type) {
+        return '<div class="inputContainer"><input is="emby-input" type="' + (type || 'text') + '" data-key="' + key + '" label="' + esc(label) + '" value="' + esc(S.settings[key]) + '" />' +
+          (desc ? '<div class="fieldDescription">' + desc + '</div>' : '') + '</div>';
+      }
+      function check(key, label, desc) {
+        return '<div class="checkboxContainer checkboxContainer-withDescription"><label><input is="emby-checkbox" type="checkbox" data-key="' + key + '"' + (S.settings[key] ? ' checked' : '') + ' /><span>' + esc(label) + '</span></label>' +
+          (desc ? '<div class="fieldDescription checkboxFieldDescription">' + desc + '</div>' : '') + '</div>';
+      }
+      function callbackBox() {
+        var cb = callbackUrl();
+        return '<div class="inputContainer"><div style="opacity:.8;margin-bottom:.3em">Callback URL — register this at your Identity Provider</div>' +
+          '<div style="display:flex;gap:.5em;align-items:center"><code style="padding:.5em;background:rgba(255,255,255,.08);flex:1">' + (cb ? esc(cb) : '<i>enter the Public Jellyfin URL first</i>') + '</code>' +
+          '<button is="emby-button" type="button" class="raised" data-act="copy"' + (cb ? '' : ' disabled') + '><span>Copy</span></button></div></div>';
+      }
+      function testButton() {
+        return '<button is="emby-button" type="button" class="raised" data-act="test"><span>Test connection</span></button> <span id="oidcTestResult">' + (S.testResult || '') + '</span>';
+      }
+      function linksTable() {
+        var rows = S.links.map(function (l, i) {
+          return '<tr><td><code>' + esc(l.sub) + '</code></td><td>' + esc(userName(l.userId)) + '</td><td>' + esc(l.linkedAt) + '</td><td>' + esc(l.lastLogin || '—') + '</td>' +
+            '<td><button is="emby-button" type="button" class="raised" data-act="unlink" data-i="' + i + '"><span>Unlink</span></button></td></tr>';
+        }).join('');
+        var opts = S.users.map(function (u) { return '<option value="' + esc(u.Id) + '">' + esc(u.Name) + '</option>'; }).join('');
+        return '<table style="width:100%;border-collapse:collapse;text-align:left"><thead><tr><th>Subject</th><th>Jellyfin user</th><th>Linked</th><th>Last sign-in</th><th></th></tr></thead><tbody>' +
+          (rows || '<tr><td colspan="5" style="opacity:.6;padding:.5em 0">No Linked Identities yet.</td></tr>') + '</tbody></table>' +
+          '<div style="display:flex;gap:.5em;align-items:flex-end;flex-wrap:wrap;margin-top:1em">' +
+          '<div style="flex:1;min-width:12em"><label>Jellyfin user</label><select is="emby-select" id="oidcLinkUser">' + opts + '</select></div>' +
+          '<div style="flex:2;min-width:16em"><label>Subject (<code>sub</code>)</label><input is="emby-input" type="text" id="oidcLinkSub" /></div>' +
+          '<button is="emby-button" type="button" class="raised" data-act="link"><span>Link</span></button></div>';
+      }
+      function saveButton() { return '<button is="emby-button" type="button" class="raised button-submit block" data-act="save"><span>Save</span></button>'; }
+      function h(title) { return '<h2 class="sectionTitle">' + esc(title) + '</h2>'; }
+
+      // ---- Variant A: one long form, sections in order ----
+      function variantA() {
+        return '<div class="verticalSection">' + h('OIDC Login') +
+          '<p>' + esc(buttonStatus()) + '</p></div>' +
+          '<div class="verticalSection">' + h('Identity Provider') +
+          text('issuerUrl', 'Issuer URL', 'Discovery is fetched from here.') + issuerWarning() +
+          text('clientId', 'Client ID') + text('clientSecret', 'Client secret', '', 'password') +
+          text('scopes', 'Scopes') + testButton() + '</div>' +
+          '<div class="verticalSection">' + h('Jellyfin') +
+          text('publicUrl', 'Public Jellyfin URL', 'The address people use in their browser, e.g. https://jellyfin.example.com') + callbackBox() +
+          check('showLoginButton', 'Show sign-in button on the login page', 'Only shown in the web client, and only once the Identity Provider settings are complete.') + '</div>' +
+          '<div class="verticalSection">' + h('Users') +
+          check('jitProvisioning', 'Create Jellyfin users at first sign-in (Just-in-time Provisioning)') +
+          text('adminGroup', 'Admin Group', 'Members become Jellyfin administrators. Leave empty to manage admins in Jellyfin only.') +
+          text('requiredAmr', 'Required authentication method (amr)', 'Set to <code>phr</code> to allow passkey sign-ins only.') +
+          text('usernameClaim', 'Username claim') + text('groupsClaim', 'Groups claim') + '</div>' +
+          '<div class="verticalSection">' + h('Linked Identities') + linksTable() + '</div>' + saveButton();
+      }
+
+      // ---- Variant B: tabs, one concern per tab ----
+      function variantB() {
+        var tabs = [['connection', 'Connection'], ['login', 'Login page'], ['users', 'Users'], ['links', 'Linked Identities (' + S.links.length + ')']];
+        var bar = '<div style="display:flex;gap:.25em;border-bottom:1px solid rgba(255,255,255,.2);margin-bottom:1em">' + tabs.map(function (t) {
+          var on = S.tab === t[0];
+          return '<button type="button" data-tab="' + t[0] + '" style="all:unset;cursor:pointer;padding:.6em 1em;' + (on ? 'border-bottom:3px solid #00a4dc;font-weight:bold' : 'opacity:.7') + '">' + esc(t[1]) + '</button>';
+        }).join('') + '</div>';
+        var body = {
+          connection: text('issuerUrl', 'Issuer URL') + issuerWarning() + text('clientId', 'Client ID') + text('clientSecret', 'Client secret', '', 'password') +
+            text('publicUrl', 'Public Jellyfin URL') + callbackBox() + '<details><summary style="cursor:pointer;margin:.5em 0">Advanced</summary>' + text('scopes', 'Scopes') + '</details>' + testButton(),
+          login: check('showLoginButton', 'Show sign-in button on the login page', 'Web client only.') + '<p style="opacity:.8">' + esc(buttonStatus()) + '</p>',
+          users: check('jitProvisioning', 'Create Jellyfin users at first sign-in') + text('adminGroup', 'Admin Group', 'Leave empty to disable admin sync.') +
+            text('requiredAmr', 'Required authentication method (amr)', '<code>phr</code> = passkey only') +
+            '<details><summary style="cursor:pointer;margin:.5em 0">Claim names</summary>' + text('usernameClaim', 'Username claim') + text('groupsClaim', 'Groups claim') + '</details>',
+          links: linksTable()
+        }[S.tab];
+        return h('OIDC Login') + bar + '<div class="verticalSection">' + body + '</div>' + (S.tab === 'links' ? '' : saveButton());
+      }
+
+      // ---- Variant C: guided setup, numbered steps with status ----
+      function variantC() {
+        var s = S.settings;
+        var done = {
+          1: !!s.publicUrl.trim(),
+          2: !!(s.issuerUrl.trim() && s.clientId.trim() && s.clientSecret.trim()),
+          3: true,
+          4: s.showLoginButton && missing().length === 0
+        };
+        function step(n, title, body) {
+          var open = S.open[n];
+          return '<div style="border:1px solid rgba(255,255,255,.15);border-radius:6px;margin:.75em 0">' +
+            '<button type="button" data-step="' + n + '" style="all:unset;cursor:pointer;display:flex;gap:.75em;align-items:center;padding:.8em 1em;width:100%;box-sizing:border-box">' +
+            '<span style="display:inline-flex;width:1.8em;height:1.8em;border-radius:50%;align-items:center;justify-content:center;background:' + (done[n] ? '#1e8c3a' : 'rgba(255,255,255,.15)') + '">' + (done[n] ? '&#10003;' : n) + '</span>' +
+            '<b style="flex:1">' + esc(title) + '</b><span style="opacity:.6">' + (open ? '&#9662;' : '&#9656;') + '</span></button>' +
+            (open ? '<div style="padding:0 1em 1em 3.5em">' + body + '</div>' : '') + '</div>';
+        }
+        return h('OIDC Login setup') +
+          step(1, 'Register Jellyfin at your Identity Provider', '<p>Tell us where people reach Jellyfin, then create a confidential OIDC client at your Identity Provider with this callback URL and PKCE enabled.</p>' + text('publicUrl', 'Public Jellyfin URL') + callbackBox()) +
+          step(2, 'Connect to the Identity Provider', text('issuerUrl', 'Issuer URL') + issuerWarning() + text('clientId', 'Client ID') + text('clientSecret', 'Client secret', '', 'password') + testButton() +
+            '<details><summary style="cursor:pointer;margin:.5em 0">Advanced</summary>' + text('scopes', 'Scopes') + text('usernameClaim', 'Username claim') + text('groupsClaim', 'Groups claim') + '</details>') +
+          step(3, 'Decide who gets in', check('jitProvisioning', 'Create Jellyfin users at first sign-in') + text('adminGroup', 'Admin Group') + text('requiredAmr', 'Required authentication method (amr)', '<code>phr</code> = passkey only')) +
+          step(4, 'Turn on the sign-in button', (missing().length ? '<p style="color:#e5a00d">Finish steps 1–2 first: missing ' + esc(missing().join(', ')) + '.</p>' : '') +
+            check('showLoginButton', 'Show sign-in button on the login page', 'Web client only.')) +
+          saveButton() +
+          '<div class="verticalSection" style="margin-top:2em">' + h('Linked Identities') + linksTable() + '</div>';
+      }
+
+      // ---- switcher, render, handlers ----
+      function current() { var m = /[?&]variant=([ABC])/.exec(window.location.hash); return m ? m[1] : 'A'; }
+      function setVariant(v) {
+        var hash = window.location.hash.replace(/[?&]variant=[ABC]/, '');
+        history.replaceState(null, '', hash + (hash.indexOf('?') >= 0 ? '&' : '?') + 'variant=' + v);
+        render();
+      }
+      function render() {
+        var v = current();
+        page.querySelector('#oidcProtoRoot').innerHTML = { A: variantA, B: variantB, C: variantC }[v]();
+        page.querySelector('#oidcProtoLabel').textContent = v + ' (' + VARIANTS[v] + ')';
+        page.querySelector('#oidcProtoState').textContent = JSON.stringify({ variant: v, settings: S.settings, links: S.links, derived: { callbackUrl: callbackUrl(), button: buttonStatus() }, log: S.log }, null, 2);
+      }
+
+      page.addEventListener('input', function (e) {
+        var key = e.target.getAttribute && e.target.getAttribute('data-key');
+        if (!key) return;
+        S.settings[key] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+        if (e.target.type === 'checkbox' || key === 'issuerUrl' || key === 'publicUrl' || key === 'clientId' || key === 'clientSecret') {
+          var pos = e.target.selectionStart; render();
+          var el = page.querySelector('[data-key="' + key + '"]'); if (el && el.type !== 'checkbox') { el.focus(); try { el.setSelectionRange(pos, pos); } catch (x) { } }
+        } else { render(); var el2 = page.querySelector('[data-key="' + key + '"]'); if (el2) el2.focus(); }
+      });
+      page.addEventListener('change', function (e) {
+        if (e.target.type === 'checkbox' && e.target.getAttribute('data-key')) { S.settings[e.target.getAttribute('data-key')] = e.target.checked; render(); }
+      });
+      page.addEventListener('click', function (e) {
+        var t = e.target.closest('[data-proto],[data-act],[data-tab],[data-step]');
+        if (!t) return;
+        var p = t.getAttribute('data-proto'), a = t.getAttribute('data-act');
+        if (p === 'prev' || p === 'next') { var i = KEYS.indexOf(current()); setVariant(KEYS[(i + (p === 'next' ? 1 : KEYS.length - 1)) % KEYS.length]); return; }
+        if (p === 'state') { var st = page.querySelector('#oidcProtoState'); st.style.display = st.style.display === 'none' ? 'block' : 'none'; return; }
+        if (t.hasAttribute('data-tab')) { S.tab = t.getAttribute('data-tab'); render(); return; }
+        if (t.hasAttribute('data-step')) { var n = t.getAttribute('data-step'); S.open[n] = !S.open[n]; render(); return; }
+        if (a === 'copy') { navigator.clipboard && navigator.clipboard.writeText(callbackUrl()); log('copied callback URL'); }
+        if (a === 'test') {
+          var ok = /^https?:\/\/[^/]+/.test(S.settings.issuerUrl.trim());
+          S.testResult = ok ? '<span style="color:#52b54b">&#10003; Discovery OK — issuer ' + esc(S.settings.issuerUrl.trim()) + ', RS256</span>' : '<span style="color:#cc3333">&#10007; Could not fetch discovery: Issuer URL must be an absolute http(s) URL</span>';
+          log('test connection (simulated): ' + (ok ? 'ok' : 'failed'));
+        }
+        if (a === 'unlink') { var l = S.links.splice(+t.getAttribute('data-i'), 1)[0]; log('unlinked ' + l.sub); }
+        if (a === 'link') {
+          var sub = page.querySelector('#oidcLinkSub').value.trim(), uid = page.querySelector('#oidcLinkUser').value;
+          if (!sub) { log('link refused: empty Subject'); }
+          else if (S.links.some(function (x) { return x.sub === sub || x.userId === uid; })) { log('link refused: Subject or user already linked'); }
+          else { S.links.push({ sub: sub, userId: uid, linkedAt: new Date().toISOString().slice(0, 10), lastLogin: '' }); log('linked ' + sub + ' -> ' + userName(uid)); }
+        }
+        if (a === 'save') { S.savedIssuer = S.settings.issuerUrl.trim(); log('save (simulated, nothing persisted)'); Dashboard.alert && Dashboard.alert('Saved (prototype — nothing persisted)'); }
+        render();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (!page.isConnected || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { var i = KEYS.indexOf(current()); setVariant(KEYS[(i + (e.key === 'ArrowRight' ? 1 : KEYS.length - 1)) % KEYS.length]); }
+      });
+
+      page.addEventListener('pageshow', function () {
+        ApiClient.getUsers().then(function (users) {
+          S.users = users;
+          if (!S.links.length && users.length) {
+            S.links = [{ sub: '6c1e2b7a-0f3d-4d5e-9a8b-1c2d3e4f5a6b', userId: users[0].Id, linkedAt: '2026-10-01', lastLogin: '2026-10-29' }];
+          }
+          render();
+        });
+        render();
+      });
+    })();
+  </script>
+</div>
