@@ -83,6 +83,16 @@ public sealed class E2EEnvironment : IAsyncLifetime
         return result.Stdout;
     }
 
+    /// <summary>
+    /// Reads the Plugin's Linked Identity file from inside the Jellyfin container.
+    /// </summary>
+    internal async Task<string> ReadLinkedIdentitiesAsync()
+    {
+        var result = await _jellyfin!.ExecAsync(["sh", "-c", "cat \"$(find /config -name linked-identities.json | head -n 1)\""]);
+        Assert.True(result.ExitCode == 0, $"Reading linked-identities.json from Jellyfin failed: {result.Stderr}");
+        return result.Stdout;
+    }
+
     private async Task StartAndSeedAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
