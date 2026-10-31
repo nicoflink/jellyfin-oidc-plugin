@@ -26,7 +26,7 @@ public static partial class ErrorPage
         FailureCategory.Expired => "Your sign-in has expired. Please try again.",
         FailureCategory.NotSetUp => "Your account isn't set up for this Jellyfin server. Please ask its administrator.",
         FailureCategory.Disabled => "Your Jellyfin account is disabled.",
-        FailureCategory.PasskeyRequired => "Please sign in with a passkey.",
+        FailureCategory.PasskeyRequired => "This server only accepts passkeys. Please sign in with your passkey.",
         FailureCategory.Unavailable => "The sign-in service is unavailable right now. Please try again later.",
         _ => "Sign-in failed.",
     };

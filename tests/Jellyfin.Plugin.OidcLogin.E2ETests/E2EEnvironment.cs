@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
@@ -46,6 +47,11 @@ public sealed class E2EEnvironment : IAsyncLifetime
     private string _adminsGroupId = null!;
 
     internal static PocketIdUser Alice { get; } = new("6a3f1c2e-8b4d-4e5f-9a1b-2c3d4e5f6a7b", "alice");
+
+    /// <summary>
+    /// Gets Bob: in <see cref="JellyfinUsersGroup"/>, without a passkey, and never signed in to Jellyfin.
+    /// </summary>
+    internal static PocketIdUser Bob { get; } = new("0d9e8f7a-6b5c-4d3e-8f2a-1b0c9d8e7f6a", "bob");
 
     internal Uri PocketIdUrl { get; private set; } = null!;
 
@@ -114,6 +120,44 @@ public sealed class E2EEnvironment : IAsyncLifetime
     {
         using var pocketId = new PocketIdAdmin(PocketIdUrl, StaticApiKey);
         await pocketId.SetUserGroupsAsync(Alice.Id, admin ? [_usersGroupId, _adminsGroupId] : [_usersGroupId], TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// Signs <paramref name="user"/> in to PocketID in <paramref name="page"/>'s browser with a one-time access code
+    /// instead of a passkey, so the ID tokens PocketID then issues carry <c>amr</c> <c>otp</c>.
+    /// </summary>
+    internal async Task SignInToPocketIdByOneTimeCodeAsync(IPage page, PocketIdUser user)
+    {
+        using var pocketId = new PocketIdAdmin(PocketIdUrl, StaticApiKey);
+        var token = await pocketId.CreateOneTimeAccessTokenAsync(user.Id, TestContext.Current.CancellationToken);
+        await page.GotoAsync(new Uri(PocketIdUrl, $"lc/{token}").ToString());
+        await page.WaitForURLAsync(url => !url.Contains("/lc/", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Changes the saved Plugin configuration with <paramref name="change"/> (its JSON, as the admin API returns it),
+    /// runs <paramref name="whileChanged"/>, and puts the configuration back. Only for tests in the
+    /// <see cref="ConfigurationChanges"/> collection.
+    /// </summary>
+    internal async Task WithConfigurationAsync(Action<JsonObject> change, Func<Task> whileChanged)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var jellyfin = new JellyfinServer(JellyfinUrl);
+        var adminToken = await jellyfin.AuthenticateAsync(JellyfinAdminName, JellyfinAdminPassword, cancellationToken);
+        var saved = (await jellyfin.GetAsync("OidcLogin/Configuration", adminToken, cancellationToken)).GetProperty("configuration");
+        var changed = JsonNode.Parse(saved.GetRawText())!.AsObject();
+        change(changed);
+
+        // Without a client secret, the save keeps the stored one.
+        await jellyfin.PostAsAdminAsync("OidcLogin/Configuration", new { Configuration = changed }, adminToken, cancellationToken);
+        try
+        {
+            await whileChanged();
+        }
+        finally
+        {
+            await jellyfin.PostAsAdminAsync("OidcLogin/Configuration", new { Configuration = saved }, adminToken, CancellationToken.None);
+        }
     }
 
     private async Task StartAndSeedAsync()
@@ -190,6 +234,8 @@ public sealed class E2EEnvironment : IAsyncLifetime
             await pocketId.CreateOidcClientAsync(OidcClientId, OidcClientSecret, new Uri("http://127.0.0.1/OidcLogin/Callback"), [_usersGroupId, _adminsGroupId], cancellationToken);
             await pocketId.CreateUserAsync(Alice, cancellationToken);
             await pocketId.SetUserGroupsAsync(Alice.Id, [_usersGroupId], cancellationToken);
+            await pocketId.CreateUserAsync(Bob, cancellationToken);
+            await pocketId.SetUserGroupsAsync(Bob.Id, [_usersGroupId], cancellationToken);
 
             InstallPlaywrightChromium();
             _playwright = await Playwright.CreateAsync();

@@ -257,6 +257,12 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
         }
 
+        // Before resolving, so a refused person is never provisioned or linked.
+        if (CheckAccess(idToken, configuration) is { } refusal)
+        {
+            return CallbackResult.Fail(Log(refusal));
+        }
+
         var (user, failure) = await ResolveUserAsync(idToken, configuration).ConfigureAwait(false);
         if (failure is not null)
         {
@@ -449,7 +455,8 @@ public sealed partial class OidcLoginService : IDisposable
     private static string CallbackUrl(PluginConfiguration configuration) => configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Callback";
 
     /// <summary>
-    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c> and the PKCE verifier.
+    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c>, the PKCE verifier and
+    /// provisioned users' passwords.
     /// </summary>
     private static string RandomToken() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
 
@@ -482,17 +489,50 @@ public sealed partial class OidcLoginService : IDisposable
                 return (linkedUser, null);
             }
 
-            if (UsernameClaim(idToken, configuration) is not { } username)
+            if (!configuration.JustInTimeProvisioning)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, $"The Subject can't be provisioned: the ID token has no {configuration.UsernameClaim} claim.") { Subject = subject });
+                return (null, new LoginFailure(FailureCategory.NotSetUp, "The Subject has no Linked Identity and Just-in-time Provisioning is off.") { Subject = subject, Username = UsernameClaim(idToken, configuration) });
             }
 
+            if (!idToken.TryGetPayloadValue<object>(configuration.UsernameClaim, out var usernameClaim) || usernameClaim is null)
+            {
+                return (null, new LoginFailure(FailureCategory.NotSetUp, $"The Subject can't be provisioned: the ID token has no {configuration.UsernameClaim} claim.") { Subject = subject });
+            }
+
+            if (usernameClaim is not string username || !JellyfinUsername().IsMatch(username))
+            {
+                return (null, new LoginFailure(FailureCategory.NotSetUp, $"The Subject can't be provisioned: its {configuration.UsernameClaim} claim isn't a valid Jellyfin username.") { Subject = subject, Username = usernameClaim as string });
+            }
+
+            // 12.x usernames are case-insensitive, so this also finds a case-only match. No suffix is ever tried.
             if (_userManager.GetUserByName(username) is not null)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, "The Subject can't be provisioned: a Jellyfin user with its username claim already exists.") { Subject = subject, Username = username });
+                return (null, UsernameTaken(subject, username));
             }
 
-            var user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
+            User user;
+            try
+            {
+                user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
+            }
+            catch (ArgumentException)
+            {
+                // Jellyfin's own check: the name is taken after all, or its rules are stricter than ours.
+                return (null, UsernameTaken(subject, username));
+            }
+
+            // Jellyfin lets a user without a password Local Login with a blank one. This password is never stored or
+            // shown, so the only way into the user is OIDC Login, until an admin sets a password.
+            try
+            {
+                await _userManager.ChangePassword(user.Id, RandomToken()).ConfigureAwait(false);
+            }
+            catch
+            {
+                await _userManager.DeleteUserAsync(user.Id).ConfigureAwait(false);
+                throw;
+            }
+
             _linkedIdentities.Add(new LinkedIdentity(issuer, subject, user.Id, now, now));
             await SyncAdminGroupAsync(user, idToken, configuration).ConfigureAwait(false);
             return (user, null);
@@ -502,6 +542,38 @@ public sealed partial class OidcLoginService : IDisposable
             _resolveLock.Release();
         }
     }
+
+    /// <summary>
+    /// Enforces the Required Group (matched by name in the groups claim; an absent claim is no membership) and the
+    /// required <c>amr</c>, for linked and new Subjects alike.
+    /// </summary>
+    private static LoginFailure? CheckAccess(JsonWebToken idToken, PluginConfiguration configuration)
+    {
+        var subject = string.IsNullOrEmpty(idToken.Subject) ? null : idToken.Subject;
+        if (!string.IsNullOrEmpty(configuration.RequiredGroup)
+            && !(TryGetStrings(idToken, configuration.GroupsClaim, out var groups) && groups.Contains(configuration.RequiredGroup, StringComparer.Ordinal)))
+        {
+            return new LoginFailure(FailureCategory.NotSetUp, $"The person isn't in Required Group {configuration.RequiredGroup}, or the ID token has no {configuration.GroupsClaim} claim.") { Subject = subject, Username = UsernameClaim(idToken, configuration) };
+        }
+
+        var hasAmr = TryGetStrings(idToken, "amr", out var methods);
+        if (!string.IsNullOrEmpty(configuration.RequiredAmr) && !(hasAmr && methods!.Contains(configuration.RequiredAmr, StringComparer.Ordinal)))
+        {
+            var used = hasAmr ? "amr " + LogText.Quote(string.Join(' ', methods!), 64) : "no amr claim";
+            return new LoginFailure(FailureCategory.PasskeyRequired, $"The sign-in didn't use the required authentication method {configuration.RequiredAmr} ({used}).") { Subject = subject, Username = UsernameClaim(idToken, configuration) };
+        }
+
+        return null;
+    }
+
+    private static LoginFailure UsernameTaken(string subject, string username)
+        => new(FailureCategory.NotSetUp, "The Subject can't be provisioned: a Jellyfin user with its username claim already exists. Link it by hand if it is the same person.") { Subject = subject, Username = username };
+
+    /// <summary>
+    /// The usernames Jellyfin 12.4 accepts for a new user (<c>UserManager.ThrowIfInvalidUsername</c>).
+    /// </summary>
+    [GeneratedRegex(@"^(?!\s)[\w\ \-'._@+]+(?<!\s)$")]
+    private static partial Regex JellyfinUsername();
 
     /// <summary>
     /// Sets <see cref="PermissionKind.IsAdministrator"/> to Admin Group membership, and nothing else. Skipped when
@@ -515,7 +587,7 @@ public sealed partial class OidcLoginService : IDisposable
             return;
         }
 
-        if (!TryGetGroups(idToken, configuration.GroupsClaim, out var groups))
+        if (!TryGetStrings(idToken, configuration.GroupsClaim, out var groups))
         {
             LogAdminGroupSkipped(user.Id, configuration.GroupsClaim);
             return;
@@ -538,9 +610,9 @@ public sealed partial class OidcLoginService : IDisposable
     }
 
     /// <summary>
-    /// Reads the groups claim: a string array, or a single string.
+    /// Reads a claim holding names, such as the groups claim or <c>amr</c>: a string array, or a single string.
     /// </summary>
-    private static bool TryGetGroups(JsonWebToken idToken, string claim, [NotNullWhen(true)] out IReadOnlyCollection<string>? groups)
+    private static bool TryGetStrings(JsonWebToken idToken, string claim, [NotNullWhen(true)] out IReadOnlyCollection<string>? groups)
     {
         groups = null;
         if (!idToken.TryGetPayloadValue<JsonElement>(claim, out var value))
