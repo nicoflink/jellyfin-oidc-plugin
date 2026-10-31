@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.OidcLogin;
@@ -9,7 +11,7 @@ namespace Jellyfin.Plugin.OidcLogin;
 /// <summary>
 /// The OIDC Login plugin.
 /// </summary>
-public class Plugin : BasePlugin<PluginConfiguration>
+public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     private static readonly Guid PluginId = Guid.Parse("d34c4da5-d189-4677-b1a5-b1ea1d0f1dbd");
 
@@ -34,4 +36,30 @@ public class Plugin : BasePlugin<PluginConfiguration>
 
     /// <inheritdoc />
     public override Guid Id => PluginId;
+
+    /// <summary>
+    /// Saves <paramref name="configuration"/>, keeping the stored client secret when it comes without one: the
+    /// secret is never sent out, so a configuration posted back without it means "unchanged".
+    /// </summary>
+    /// <param name="configuration">The new configuration.</param>
+    public override void UpdateConfiguration(BasePluginConfiguration configuration)
+    {
+        if (configuration is PluginConfiguration incoming && string.IsNullOrEmpty(incoming.ClientSecret))
+        {
+            incoming.ClientSecret = Configuration.ClientSecret;
+        }
+
+        base.UpdateConfiguration(configuration);
+    }
+
+    /// <inheritdoc />
+    public IEnumerable<PluginPageInfo> GetPages() =>
+    [
+        new PluginPageInfo
+        {
+            Name = "OidcLogin",
+            DisplayName = "OIDC Login",
+            EmbeddedResourcePath = "Jellyfin.Plugin.OidcLogin.Web.ConfigPage.html",
+        },
+    ];
 }
