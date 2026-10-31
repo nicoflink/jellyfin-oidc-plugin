@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":dependencyDashboard", "helpers:pinGitHubActionDigests"],
+  "platformAutomerge": true,
+  "ignorePaths": [],
+  "customManagers": [
+    {
+      "description": "Digest-pinned container images in the test code, marked with a `// renovate:` comment. config:recommended ignores tests/, hence the empty ignorePaths.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^tests/.+\\.cs$/"],
+      "matchStrings": [
+        "// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+.*?\"[^\":]+:(?<currentValue>[^\"@]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ]
+    },
+    {
+      "description": "targetAbi in build.yaml follows Jellyfin.Controller (12.4.0 is written as \"12.4.0.0\"). semver, because in NuGet versioning a bare 12.4.0 is a range that newer versions already satisfy.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^build\\.yaml$/"],
+      "matchStrings": ["targetAbi:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.0\""],
+      "datasourceTemplate": "nuget",
+      "depNameTemplate": "Jellyfin.Controller",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Everything else: one weekly group, automerged when green",
+      "matchPackageNames": [
+        "!Jellyfin.Controller",
+        "!Jellyfin.Model",
+        "!jellyfin/jellyfin",
+        "!ghcr.io/pocket-id/pocket-id"
+      ],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "Other dependencies",
+      "schedule": ["* 0-3 * * 1"],
+      "automerge": true
+    },
+    {
+      "description": "The Jellyfin the Plugin targets: image, NuGet packages and targetAbi in one PR, opened only once all four have moved (NuGet publishes before Docker Hub). A merged bump changes targetAbi, which cuts the patch release.",
+      "matchPackageNames": ["Jellyfin.Controller", "Jellyfin.Model", "jellyfin/jellyfin"],
+      "groupName": "Jellyfin",
+      "minimumGroupSize": 4,
+      "automerge": true
+    },
+    {
+      "description": "The Identity Provider the E2E tests run against",
+      "matchPackageNames": ["ghcr.io/pocket-id/pocket-id"],
+      "groupName": "PocketID",
+      "automerge": true
+    },
+    {
+      "description": "Majors always get their own PR and wait for the maintainer",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
