@@ -40,7 +40,7 @@ test_config_is_valid() {
 make_fixture() {
   fixture="$(mktemp -d)"
   chmod 755 "$fixture" # Renovate runs as a non-root user in the container
-  git -C "$root" ls-files -co --exclude-standard -z | (cd "$root" && xargs -0 cp --parents -t "$fixture")
+  git -C "$root" ls-files -z | (cd "$root" && xargs -0 cp --parents -t "$fixture")
   sed -i 's/^targetAbi: "[0-9.]*"$/targetAbi: "12.0.0.0"/' "$fixture/build.yaml"
   sed -i 's#jellyfin/jellyfin:[^@"]*@#jellyfin/jellyfin:12.0@#; s#pocket-id:v[^@"]*@#pocket-id:v2.0.0@#' \
     "$fixture/tests/Jellyfin.Plugin.OidcLogin.E2ETests/ContainerImages.cs"
