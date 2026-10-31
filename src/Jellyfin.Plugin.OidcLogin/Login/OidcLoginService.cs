@@ -283,6 +283,18 @@ public sealed partial class OidcLoginService : IDisposable
     /// <inheritdoc />
     public void Dispose() => _resolveLock.Dispose();
 
+    /// <summary>
+    /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
+    /// URL, a client id and a client secret.
+    /// </summary>
+    /// <param name="configuration">The plugin configuration.</param>
+    /// <returns><c>true</c> when an OIDC Login can start.</returns>
+    public static bool IsConfigured(PluginConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return TryGetSettings(configuration, out _, out _);
+    }
+
     private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
         => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
 

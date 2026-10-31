@@ -41,4 +41,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the ID token claim holding the person's Identity Provider group names.
     /// </summary>
     public string GroupsClaim { get; set; } = "groups";
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the Login Entry Point button shows on the web login page.
+    /// </summary>
+    public bool ShowSignInButton { get; set; }
 }

@@ -140,6 +140,7 @@ public sealed class E2EEnvironment : IAsyncLifetime
                     IssuerUrl = PocketIdUrl.ToString().TrimEnd('/'),
                     ClientId = OidcClientId,
                     ClientSecret = OidcClientSecret,
+                    ShowSignInButton = true,
                 },
                 adminToken,
                 cancellationToken);
