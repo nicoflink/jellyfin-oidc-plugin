@@ -9,14 +9,8 @@
     // jellyfin-web's ConnectionMode.Manual.
     var MANUAL_CONNECTION = 2;
 
-    var status = document.getElementById('status');
-
     // The server address jellyfin-web uses: the Public Jellyfin URL including any base path, without a trailing slash.
     var serverAddress = new URL('..', window.location.href).href.replace(/\/$/, '');
-
-    function show(text) {
-        status.textContent = text;
-    }
 
     // jellyfin-web's own device id (apphost.js getDeviceId), so this browser keeps one device and a new OIDC Login
     // replaces its earlier session.
@@ -61,12 +55,19 @@
         localStorage.setItem('jellyfin_credentials', JSON.stringify(credentials));
     }
 
-    var code = new URLSearchParams(window.location.hash.slice(1)).get('code');
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
-    if (!code) {
-        show('Sign-in Expired.');
-        return;
+    // Shows the error page for a failure, which renders the category's message and the reference code.
+    function showError(category, reference) {
+        var query = new URLSearchParams({ category: String(category) });
+        if (reference) {
+            query.set('ref', String(reference));
+        }
+
+        window.location.replace('Error?' + query.toString());
     }
+
+    // Without a code the server still answers, so even a stale bookmark gets a logged reference code.
+    var code = new URLSearchParams(window.location.hash.slice(1)).get('code') || '';
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
 
     fetch('Complete', {
         method: 'POST',
@@ -76,7 +77,7 @@
     }).then(function (response) {
         return response.json().then(function (body) {
             if (!response.ok) {
-                show('Sign-in ' + String(body.category) + '.');
+                showError(body.category, body.ref);
                 return;
             }
 
@@ -84,6 +85,6 @@
             window.location.replace(serverAddress + '/web/');
         });
     }).catch(function () {
-        show('Sign-in Failed.');
+        showError('Failed');
     });
 }());

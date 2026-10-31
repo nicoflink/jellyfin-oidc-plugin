@@ -34,7 +34,7 @@ public sealed partial class OidcLoginService : IDisposable
 {
     private static readonly TimeSpan FlowLifetime = TimeSpan.FromMinutes(10);
 
-    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required.");
+    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required.") { Level = LogLevel.Error };
 
     private readonly IdentityProviderClient _identityProvider;
     private readonly FlowCookieProtector _flowCookie;
@@ -115,7 +115,7 @@ public sealed partial class OidcLoginService : IDisposable
 
         if (string.IsNullOrEmpty(discovery.AuthorizationEndpoint))
         {
-            return StartResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no authorization_endpoint.")));
+            return StartResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no authorization_endpoint.") { Level = LogLevel.Error }));
         }
 
         var flow = new FlowState(RandomToken(), RandomToken(), RandomToken(), _clock.GetUtcNow() + FlowLifetime);
@@ -162,6 +162,12 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
         }
 
+        // Only after the state check: an unbound error response could otherwise be planted on someone's login.
+        if (query.Error is not null)
+        {
+            return CallbackResult.Fail(Log(IdentityProviderError(query.Error, query.ErrorDescription)));
+        }
+
         if (string.IsNullOrEmpty(query.Code))
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no authorization code.")));
@@ -179,21 +185,31 @@ public sealed partial class OidcLoginService : IDisposable
 
         if (!Uri.TryCreate(discovery.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
         {
-            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no token_endpoint.")));
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no token_endpoint.") { Level = LogLevel.Error }));
+        }
+
+        string rawIdToken;
+        try
+        {
+            rawIdToken = await _identityProvider.RedeemCodeAsync(
+                tokenEndpoint,
+                new CodeRedemption(query.Code, CallbackUrl(configuration), flow.CodeVerifier, configuration.ClientId, configuration.ClientSecret),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException e)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Unavailable, $"The token endpoint {tokenEndpoint} could not be reached: {e.Message}")));
+        }
+        catch (IdentityProviderException e)
+        {
+            // Usually the client secret or redirect URI, which only an admin can fix.
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, e.Message) { Level = LogLevel.Error }));
         }
 
         JsonWebToken idToken;
         try
         {
-            var rawIdToken = await _identityProvider.RedeemCodeAsync(
-                tokenEndpoint,
-                new CodeRedemption(query.Code, CallbackUrl(configuration), flow.CodeVerifier, configuration.ClientId, configuration.ClientSecret),
-                cancellationToken).ConfigureAwait(false);
             idToken = await IdentityProviderClient.ValidateIdTokenAsync(rawIdToken, discovery, configuration.ClientId, flow.Nonce, _clock).ConfigureAwait(false);
-        }
-        catch (HttpRequestException e)
-        {
-            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Unavailable, $"The token endpoint {tokenEndpoint} could not be reached: {e.Message}")));
         }
         catch (IdentityProviderException e)
         {
@@ -286,6 +302,21 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <inheritdoc />
     public void Dispose() => _resolveLock.Dispose();
+
+    /// <summary>
+    /// The Identity Provider's <c>error</c> response: <c>access_denied</c> is the person cancelling, anything else is
+    /// usually a setup problem.
+    /// </summary>
+    private static LoginFailure IdentityProviderError(string error, string? description)
+    {
+        var cause = $"The Identity Provider answered with error {LogText.Quote(error, 64)}: {LogText.Quote(description ?? "no description", 256)}";
+        return error == "access_denied"
+            ? new LoginFailure(FailureCategory.Cancelled, cause)
+            : new LoginFailure(FailureCategory.Failed, cause) { Level = LogLevel.Error };
+    }
+
+    private static string? UsernameClaim(JsonWebToken idToken, PluginConfiguration configuration)
+        => idToken.TryGetPayloadValue<string>(configuration.UsernameClaim, out var username) && !string.IsNullOrWhiteSpace(username) ? username : null;
 
     /// <summary>
     /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
@@ -389,7 +420,7 @@ public sealed partial class OidcLoginService : IDisposable
             {
                 if (_userManager.GetUserById(link.UserId) is not { } linkedUser)
                 {
-                    return (null, new LoginFailure(FailureCategory.Failed, $"Subject {subject} is linked to Jellyfin user {link.UserId}, which no longer exists."));
+                    return (null, new LoginFailure(FailureCategory.Failed, $"The Subject is linked to Jellyfin user {link.UserId}, which no longer exists.") { Subject = subject, Username = UsernameClaim(idToken, configuration) });
                 }
 
                 _linkedIdentities.RecordLogin(issuer, subject, now);
@@ -397,14 +428,14 @@ public sealed partial class OidcLoginService : IDisposable
                 return (linkedUser, null);
             }
 
-            if (!idToken.TryGetPayloadValue<string>(configuration.UsernameClaim, out var username) || string.IsNullOrWhiteSpace(username))
+            if (UsernameClaim(idToken, configuration) is not { } username)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, $"Subject {subject} can't be provisioned: the ID token has no {configuration.UsernameClaim} claim."));
+                return (null, new LoginFailure(FailureCategory.Failed, $"The Subject can't be provisioned: the ID token has no {configuration.UsernameClaim} claim.") { Subject = subject });
             }
 
             if (_userManager.GetUserByName(username) is not null)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, $"Subject {subject} can't be provisioned: a Jellyfin user named '{username}' already exists."));
+                return (null, new LoginFailure(FailureCategory.Failed, "The Subject can't be provisioned: a Jellyfin user with its username claim already exists.") { Subject = subject, Username = username });
             }
 
             var user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
@@ -475,30 +506,45 @@ public sealed partial class OidcLoginService : IDisposable
         return groups is not null;
     }
 
+    /// <summary>
+    /// A reference code: 8 characters from an alphabet without look-alikes, enough to find one log entry.
+    /// </summary>
+    private static string NewReference() => RandomNumberGenerator.GetString("0123456789ABCDEFGHJKMNPQRSTVWXYZ", 8);
+
+    /// <summary>
+    /// Writes the failure's one log entry, tagged with a new reference code, and returns it carrying that code.
+    /// </summary>
     private LoginFailure Log(LoginFailure failure)
     {
-        // Expired is a normal outcome (a stale tab, a second browser); everything else needs an admin's attention.
-        if (failure.Category == FailureCategory.Expired)
+        failure = failure with { Reference = NewReference() };
+        if (failure.Subject is null)
         {
-            LogExpired(failure.Cause);
+            LogFailure(failure.Level, failure.Category, failure.Reference, failure.Cause);
         }
         else
         {
-            LogFailure(failure.Category, failure.Cause);
+            // Both come from a valid ID token, but are still the Identity Provider's text.
+            LogFailureForSubject(
+                failure.Level,
+                failure.Category,
+                failure.Reference,
+                failure.Cause,
+                LogText.Quote(failure.Subject, 255),
+                failure.Username is null ? "unknown" : LogText.Quote(failure.Username, 255));
         }
 
         return failure;
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "OIDC Login failed ({Category}): {Cause}")]
-    private partial void LogFailure(FailureCategory category, string cause);
+    [LoggerMessage(Message = "OIDC Login {Category}, reference {Reference}: {Cause}")]
+    private partial void LogFailure(LogLevel level, FailureCategory category, string reference, string cause);
+
+    [LoggerMessage(Message = "OIDC Login {Category}, reference {Reference}: {Cause} Subject: {Subject}, username claim: {Username}.")]
+    private partial void LogFailureForSubject(LogLevel level, FailureCategory category, string reference, string cause, string subject, string username);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Admin Group sync skipped for Jellyfin user {UserId}: the ID token has no {GroupsClaim} claim")]
     private partial void LogAdminGroupSkipped(Guid userId, string groupsClaim);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Jellyfin user {UserId} is not in Admin Group {AdminGroup} but stays an administrator: it is the last one")]
     private partial void LogLastAdministratorKept(Guid userId, string adminGroup);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "OIDC Login expired: {Cause}")]
-    private partial void LogExpired(string cause);
 }

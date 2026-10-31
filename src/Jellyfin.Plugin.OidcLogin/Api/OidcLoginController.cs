@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Mime;
 using System.Text;
@@ -16,6 +18,7 @@ namespace Jellyfin.Plugin.OidcLogin.Api;
 /// </summary>
 [ApiController]
 [AllowAnonymous]
+[PluginPageHeaders]
 [Route("OidcLogin")]
 public class OidcLoginController : ControllerBase
 {
@@ -39,7 +42,7 @@ public class OidcLoginController : ControllerBase
     /// Starts an OIDC Login by redirecting to the Identity Provider.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>A redirect to the Identity Provider, or an error status.</returns>
+    /// <returns>A redirect to the Identity Provider, or to the error page.</returns>
     [HttpGet("Start")]
     [ProducesResponseType(StatusCodes.Status302Found)]
     public async Task<ActionResult> Start(CancellationToken cancellationToken)
@@ -47,7 +50,7 @@ public class OidcLoginController : ControllerBase
         var result = await _loginService.StartAsync(cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure)
         {
-            return PlainFailure(failure);
+            return RedirectToError(failure);
         }
 
         var cookie = result.FlowCookie!;
@@ -60,16 +63,23 @@ public class OidcLoginController : ControllerBase
     /// </summary>
     /// <param name="code">The authorization code.</param>
     /// <param name="state">The <c>state</c> echoed from Start.</param>
+    /// <param name="error">The Identity Provider's <c>error</c>, sent instead of a code.</param>
+    /// <param name="errorDescription">The Identity Provider's <c>error_description</c>.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>A redirect to <c>/OidcLogin/Complete</c> with a handoff code, or an error status.</returns>
+    /// <returns>A redirect to <c>/OidcLogin/Complete</c> with a handoff code, or to the error page.</returns>
     [HttpGet("Callback")]
     [ProducesResponseType(StatusCodes.Status302Found)]
-    public async Task<ActionResult> Callback([FromQuery] string? code, [FromQuery] string? state, CancellationToken cancellationToken)
+    public async Task<ActionResult> Callback(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        [FromQuery(Name = "error_description")] string? errorDescription,
+        CancellationToken cancellationToken)
     {
-        var result = await _loginService.CallbackAsync(new CallbackQuery(code, state), FlowCookieValue(), cancellationToken).ConfigureAwait(false);
+        var result = await _loginService.CallbackAsync(new CallbackQuery(code, state, error, errorDescription), FlowCookieValue(), cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure)
         {
-            return PlainFailure(failure);
+            return RedirectToError(failure);
         }
 
         return Redirect(result.CompleteUrl!.ToString());
@@ -92,10 +102,31 @@ public class OidcLoginController : ControllerBase
     public ActionResult CompleteScript() => StaticPage("Complete.js", "text/javascript");
 
     /// <summary>
+    /// Serves the page every OIDC Login failure ends on, answered with its category's status.
+    /// </summary>
+    /// <param name="category">The failure category; anything else is shown as Failed.</param>
+    /// <param name="reference">The failure's reference code.</param>
+    /// <returns>The error page.</returns>
+    [HttpGet("Error")]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public ActionResult Error([FromQuery] string? category, [FromQuery(Name = "ref")] string? reference)
+    {
+        var failureCategory = Enum.TryParse<FailureCategory>(category, out var parsed) && Enum.IsDefined(parsed) && !int.TryParse(category, out _)
+            ? parsed
+            : FailureCategory.Failed;
+        return new ContentResult
+        {
+            StatusCode = new LoginFailure(failureCategory, string.Empty).StatusCode,
+            ContentType = MediaTypeNames.Text.Html + "; charset=utf-8",
+            Content = ErrorPage.Render(failureCategory, reference),
+        };
+    }
+
+    /// <summary>
     /// Exchanges a handoff code, presented with its flow cookie, for a Jellyfin session.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The session (<c>accessToken</c>, <c>userId</c>, <c>serverId</c>), or the failure <c>category</c>.</returns>
+    /// <returns>The session (<c>accessToken</c>, <c>userId</c>, <c>serverId</c>), or the failure <c>category</c> and <c>ref</c>.</returns>
     [HttpPost("Complete")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult> Complete(CancellationToken cancellationToken)
@@ -118,10 +149,9 @@ public class OidcLoginController : ControllerBase
                 HttpContext.Connection.RemoteIpAddress?.ToString()),
             cancellationToken).ConfigureAwait(false);
 
-        Response.Headers.CacheControl = "no-store";
         if (result.Failure is { } failure)
         {
-            return Json(StatusFor(failure), new { category = failure.Category.ToString() });
+            return Json(failure.StatusCode, new Dictionary<string, string> { ["category"] = failure.Category.ToString(), ["ref"] = failure.Reference });
         }
 
         var cookie = result.ClearedFlowCookie!;
@@ -129,23 +159,6 @@ public class OidcLoginController : ControllerBase
         var session = result.Session!;
         return Json(StatusCodes.Status200OK, new { accessToken = session.AccessToken, userId = session.UserId.ToString("N"), serverId = session.ServerId });
     }
-
-    /// <summary>
-    /// A plain status until the error page arrives; the cause is only logged.
-    /// </summary>
-    private static ContentResult PlainFailure(LoginFailure failure) => new()
-    {
-        StatusCode = StatusFor(failure),
-        ContentType = MediaTypeNames.Text.Plain,
-        Content = $"Sign-in {failure.Category}.",
-    };
-
-    private static int StatusFor(LoginFailure failure) => failure.Category switch
-    {
-        FailureCategory.Expired => StatusCodes.Status400BadRequest,
-        FailureCategory.Unavailable => StatusCodes.Status502BadGateway,
-        _ => StatusCodes.Status500InternalServerError,
-    };
 
     /// <summary>
     /// Serializes <paramref name="value"/> with fixed camelCase names, independent of Jellyfin's MVC JSON settings.
@@ -163,6 +176,13 @@ public class OidcLoginController : ControllerBase
         using var reader = new StreamReader(stream, Encoding.UTF8);
         return new ContentResult { ContentType = contentType + "; charset=utf-8", Content = reader.ReadToEnd() };
     }
+
+    /// <summary>
+    /// Sends the browser to the error page, relative to <c>/OidcLogin/</c> so it holds without a configured Public
+    /// Jellyfin URL. The cause is only in the reference code's log entry.
+    /// </summary>
+    private RedirectResult RedirectToError(LoginFailure failure)
+        => Redirect("Error?category=" + failure.Category + "&ref=" + Uri.EscapeDataString(failure.Reference));
 
     private string? FlowCookieValue()
         => Request.Cookies[FlowCookieProtector.SecureCookieName] ?? Request.Cookies[FlowCookieProtector.InsecureCookieName];

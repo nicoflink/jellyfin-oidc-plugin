@@ -98,7 +98,7 @@ public sealed class IdentityProviderClient
         using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw new IdentityProviderException($"The token endpoint rejected the code with status {(int)response.StatusCode}.");
+            throw new IdentityProviderException($"The token endpoint rejected the code with status {(int)response.StatusCode} and error {await TokenErrorAsync(response, cancellationToken).ConfigureAwait(false)}.");
         }
 
         try
@@ -160,6 +160,28 @@ public sealed class IdentityProviderClient
         }
 
         return token;
+    }
+
+    /// <summary>
+    /// The <c>error</c> of a token error response (RFC 6749 section 5.2), sanitised for the log.
+    /// </summary>
+    private static async Task<string> TokenErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            if (body.RootElement.ValueKind == JsonValueKind.Object
+                && body.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+            {
+                return LogText.Quote(error.GetString()!, 64);
+            }
+        }
+        catch (JsonException)
+        {
+            // Reported as unknown, like a body without an error.
+        }
+
+        return "unknown";
     }
 
     private sealed record Discovery(Uri Issuer, ConfigurationManager<OpenIdConnectConfiguration> Manager);
