@@ -308,6 +308,57 @@ public sealed class IdTokenAndDiscoveryHardeningTests : IDisposable
         Assert.Equal(FailureCategory.Failed, result.Failure?.Category);
     }
 
+    [Fact]
+    public async Task CallbackWithoutIssFailsWithoutRedeemingTheCodeWhenDiscoveryAdvertisesIt()
+    {
+        _identityProvider.AdvertisesIssParameter = true;
+        var service = CreateService();
+        var (query, cookie) = await SignInAsync(service, claims => _identityProvider.Sign(claims, SecurityAlgorithms.RsaSha256));
+
+        var result = await service.CallbackAsync(query with { Iss = null }, cookie, TestContext.Current.CancellationToken);
+
+        AssertFailedWithoutProvisioning(result);
+        Assert.Null(_identityProvider.LastTokenRequest);
+    }
+
+    [Fact]
+    public async Task CallbackWithoutIssFailsEvenOnAnErrorResponseWhenDiscoveryAdvertisesIt()
+    {
+        _identityProvider.AdvertisesIssParameter = true;
+        var service = CreateService();
+        var (query, cookie) = await SignInAsync(service, claims => _identityProvider.Sign(claims, SecurityAlgorithms.RsaSha256));
+
+        var result = await service.CallbackAsync(
+            query with { Code = null, Error = "access_denied", Iss = null },
+            cookie,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(FailureCategory.Failed, result.Failure?.Category);
+    }
+
+    [Fact]
+    public async Task CallbackIssEqualToTheIssuerIsAcceptedWhenDiscoveryAdvertisesIt()
+    {
+        _identityProvider.AdvertisesIssParameter = true;
+        var service = CreateService();
+        var (query, cookie) = await SignInAsync(service, claims => _identityProvider.Sign(claims, SecurityAlgorithms.RsaSha256));
+
+        var result = await service.CallbackAsync(query with { Iss = StubIdentityProvider.Issuer }, cookie, TestContext.Current.CancellationToken);
+
+        Assert.Null(result.Failure);
+    }
+
+    [Fact]
+    public async Task CallbackWithoutIssIsAcceptedWhenDiscoveryDoesNotAdvertiseIt()
+    {
+        var service = CreateService();
+        var (query, cookie) = await SignInAsync(service, claims => _identityProvider.Sign(claims, SecurityAlgorithms.RsaSha256));
+
+        var result = await service.CallbackAsync(query with { Iss = null }, cookie, TestContext.Current.CancellationToken);
+
+        Assert.Null(result.Failure);
+    }
+
     [Theory]
     [InlineData("192.168.1.10:8096")]
     [InlineData("jellyfin.example.test:8096")]
