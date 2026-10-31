@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security;
@@ -11,7 +12,9 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Library;
@@ -45,7 +48,8 @@ public sealed partial class OidcLoginService : IDisposable
     private readonly ILogger<OidcLoginService> _logger;
 
     /// <summary>
-    /// Serializes resolving Subjects to users, so two concurrent first logins can't provision twice.
+    /// Serializes resolving Subjects to users, so two concurrent first logins can't provision twice and two
+    /// concurrent demotions can't both pass the last-admin guard.
     /// </summary>
     private readonly SemaphoreSlim _resolveLock = new(1, 1);
 
@@ -314,6 +318,18 @@ public sealed partial class OidcLoginService : IDisposable
     private static string? UsernameClaim(JsonWebToken idToken, PluginConfiguration configuration)
         => idToken.TryGetPayloadValue<string>(configuration.UsernameClaim, out var username) && !string.IsNullOrWhiteSpace(username) ? username : null;
 
+    /// <summary>
+    /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
+    /// URL, a client id and a client secret.
+    /// </summary>
+    /// <param name="configuration">The plugin configuration.</param>
+    /// <returns><c>true</c> when an OIDC Login can start.</returns>
+    public static bool IsConfigured(PluginConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return TryGetSettings(configuration, out _, out _);
+    }
+
     private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
         => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
 
@@ -385,7 +401,7 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Resolves the ID token's Subject to a Jellyfin user through its Linked Identity, provisioning a user and a link
-    /// when the Subject has none.
+    /// when the Subject has none, then syncs the user's Admin Group membership.
     /// </summary>
     private async Task<(User? User, LoginFailure? Failure)> ResolveUserAsync(JsonWebToken idToken, PluginConfiguration configuration)
     {
@@ -408,6 +424,7 @@ public sealed partial class OidcLoginService : IDisposable
                 }
 
                 _linkedIdentities.RecordLogin(issuer, subject, now);
+                await SyncAdminGroupAsync(linkedUser, idToken, configuration).ConfigureAwait(false);
                 return (linkedUser, null);
             }
 
@@ -423,12 +440,70 @@ public sealed partial class OidcLoginService : IDisposable
 
             var user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
             _linkedIdentities.Add(new LinkedIdentity(issuer, subject, user.Id, now, now));
+            await SyncAdminGroupAsync(user, idToken, configuration).ConfigureAwait(false);
             return (user, null);
         }
         finally
         {
             _resolveLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Sets <see cref="PermissionKind.IsAdministrator"/> to Admin Group membership, and nothing else. Skipped when
+    /// the setting is empty or the groups claim is absent; the last enabled administrator is never demoted. Runs
+    /// under <see cref="_resolveLock"/>, so the admin count can't change between counting and demoting.
+    /// </summary>
+    private async Task SyncAdminGroupAsync(User user, JsonWebToken idToken, PluginConfiguration configuration)
+    {
+        if (string.IsNullOrEmpty(configuration.AdminGroup))
+        {
+            return;
+        }
+
+        if (!TryGetGroups(idToken, configuration.GroupsClaim, out var groups))
+        {
+            LogAdminGroupSkipped(user.Id, configuration.GroupsClaim);
+            return;
+        }
+
+        var member = groups.Contains(configuration.AdminGroup, StringComparer.Ordinal);
+        if (member == user.HasPermission(PermissionKind.IsAdministrator))
+        {
+            return;
+        }
+
+        if (!member && !_userManager.GetUsers().Any(u => u.Id != user.Id && u.HasPermission(PermissionKind.IsAdministrator) && !u.HasPermission(PermissionKind.IsDisabled)))
+        {
+            LogLastAdministratorKept(user.Id, configuration.AdminGroup);
+            return;
+        }
+
+        user.SetPermission(PermissionKind.IsAdministrator, member);
+        await _userManager.UpdateUserAsync(user).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the groups claim: a string array, or a single string.
+    /// </summary>
+    private static bool TryGetGroups(JsonWebToken idToken, string claim, [NotNullWhen(true)] out IReadOnlyCollection<string>? groups)
+    {
+        groups = null;
+        if (!idToken.TryGetPayloadValue<JsonElement>(claim, out var value))
+        {
+            return false;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            groups = [value.GetString()!];
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            groups = value.EnumerateArray().Where(g => g.ValueKind == JsonValueKind.String).Select(g => g.GetString()!).ToArray();
+        }
+
+        return groups is not null;
     }
 
     /// <summary>
@@ -466,4 +541,10 @@ public sealed partial class OidcLoginService : IDisposable
 
     [LoggerMessage(Message = "OIDC Login {Category}, reference {Reference}: {Cause} Subject: {Subject}, username claim: {Username}.")]
     private partial void LogFailureForSubject(LogLevel level, FailureCategory category, string reference, string cause, string subject, string username);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Admin Group sync skipped for Jellyfin user {UserId}: the ID token has no {GroupsClaim} claim")]
+    private partial void LogAdminGroupSkipped(Guid userId, string groupsClaim);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Jellyfin user {UserId} is not in Admin Group {AdminGroup} but stays an administrator: it is the last one")]
+    private partial void LogLastAdministratorKept(Guid userId, string adminGroup);
 }

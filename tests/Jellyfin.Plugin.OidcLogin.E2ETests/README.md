@@ -4,12 +4,12 @@ These tests run a real PocketID and a real Jellyfin (with the Plugin installed) 
 
 ## How the harness is wired
 
-- **One environment per test run.** `E2EEnvironment` is an xUnit assembly fixture. It installs the Plugin as a release would (every artifact `build.yaml` lists), starts both containers, completes Jellyfin's first-run wizard as `admin`, configures the Plugin for PocketID, and seeds PocketID through its API with the `STATIC_API_KEY`. Seeding creates two groups, the confidential OIDC client `jellyfin` (PKCE enforced, consent skipped, group-restricted), and Alice with a fixed Subject. It then enrols a passkey for Alice through PocketID's UI.
+- **One environment per test run.** `E2EEnvironment` is an xUnit assembly fixture. It installs the Plugin as a release would (every artifact `build.yaml` lists), starts both containers, completes Jellyfin's first-run wizard as `admin`, configures the Plugin for PocketID (Admin Group `jellyfin-admins`), and seeds PocketID through its API with the `STATIC_API_KEY`. Seeding creates two groups (`jellyfin-users`, which Alice is in, and `jellyfin-admins`), the confidential OIDC client `jellyfin` (PKCE enforced, consent skipped, group-restricted), and Alice with a fixed Subject. It then enrols a passkey for Alice through PocketID's UI.
 - **Shared network namespace.** PocketID and Jellyfin join one network namespace, owned by a placeholder container (the PocketID image running `sleep`). WebAuthn needs a secure origin, so PocketID's `APP_URL` is `http://localhost:P`, and inside the namespace Jellyfin reaches the issuer at that same URL. The placeholder publishes `P:P` and Jellyfin's 8096 on a random port, so PocketID can be stopped while Jellyfin stays reachable.
 - **Outage tests run last.** Tests that stop PocketID (`WithPocketIdStoppedAsync`) belong to the `IdentityProviderOutage` collection, which xUnit runs alone after all others. PocketID restarts with its data afterwards.
 - **Two hostnames.** The browser uses `localhost` for PocketID and `127.0.0.1` for Jellyfin, so the two apps' cookies stay apart.
 - **Fresh passkey contexts.** `NewSessionAsync(withAlicePasskey: true)` opens a fresh browser context that holds only Alice's captured passkey and has no PocketID session. Signing in from it is a real passkey assertion.
-- **Pinned images.** Both image references live in `ContainerImages.cs`, digest-pinned, with `// renovate:` comments that Renovate's regex manager will match once it is configured (#34).
+- **Pinned images.** Both image references live in `ContainerImages.cs`, digest-pinned, with `// renovate:` comments that the regex manager in `renovate.json` matches. Keep each comment on the line above its constant, and keep the `name:tag@sha256:digest` form.
 
 ## Artifacts
 

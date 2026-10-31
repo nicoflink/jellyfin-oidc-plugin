@@ -1,0 +1,23 @@
+name: Renovate config
+
+# Checks renovate.json against real Renovate when it (or what its managers read) changes.
+# Not a required check: it depends on live registries.
+on:
+  pull_request:
+    paths:
+      - renovate.json
+      - build.yaml
+      - tests/Jellyfin.Plugin.OidcLogin.E2ETests/ContainerImages.cs
+      - .github/scripts/renovate-config.test.sh
+      - .github/workflows/renovate-config.yml
+
+permissions:
+  contents: read
+
+jobs:
+  renovate-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Renovate config tests
+        run: .github/scripts/renovate-config.test.sh

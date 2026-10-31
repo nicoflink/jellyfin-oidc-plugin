@@ -7,8 +7,8 @@ using Xunit;
 namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 
 /// <summary>
-/// The whole OIDC Login (scenario 1 without the button): from <c>/OidcLogin/Start</c> to signed in on Jellyfin's
-/// home page, in the same tab.
+/// The whole OIDC Login (scenarios 1 and 2): from the "Sign in with PocketID" button on the anonymous login page to
+/// signed in on Jellyfin's home page, in the same tab.
 /// </summary>
 public sealed class LoginCompleteTests(E2EEnvironment environment)
 {
@@ -40,6 +40,38 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
     }
 
     /// <summary>
+    /// Scenario 2: repeat logins as the same user follow the Admin Group. Runs in this class so it never overlaps the
+    /// test above, which expects Alice not to be an administrator.
+    /// </summary>
+    [Fact]
+    public async Task RepeatLoginsPromoteAndDemoteWithTheAdminGroup()
+    {
+        var (aliceId, _, _) = await SignInAsync();
+        try
+        {
+            await environment.SetAliceGroupsAsync(admin: true);
+            Assert.Equal(aliceId, (await SignInAsync()).UserId);
+            Assert.True(await IsAdministratorAsync(aliceId));
+
+            await environment.SetAliceGroupsAsync(admin: false);
+            Assert.Equal(aliceId, (await SignInAsync()).UserId);
+            Assert.False(await IsAdministratorAsync(aliceId));
+        }
+        finally
+        {
+            await environment.SetAliceGroupsAsync(admin: false);
+        }
+    }
+
+    private async Task<bool> IsAdministratorAsync(Guid userId)
+    {
+        using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
+        var adminToken = await jellyfin.AuthenticateAsync(E2EEnvironment.JellyfinAdminName, E2EEnvironment.JellyfinAdminPassword, TestContext.Current.CancellationToken);
+        var user = await jellyfin.GetAsync($"Users/{userId}", adminToken, TestContext.Current.CancellationToken);
+        return user.GetProperty("Policy").GetProperty("IsAdministrator").GetBoolean();
+    }
+
+    /// <summary>
     /// Runs an OIDC Login with Alice's passkey in a fresh browser and returns the credentials jellyfin-web holds on
     /// its home page, checked against the server.
     /// </summary>
@@ -48,7 +80,10 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
         await using var session = await environment.NewSessionAsync(withAlicePasskey: true);
         var page = session.Page;
 
-        await page.GotoAsync(new Uri(environment.JellyfinUrl, "OidcLogin/Start").ToString());
+        await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/login").ToString());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in with PocketID" }).ClickAsync();
+        await page.WaitForURLAsync(url => new Uri(url).Authority == environment.PocketIdUrl.Authority);
+        Assert.Single(session.Context.Pages);
         await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
 
         var webHome = new Uri(environment.JellyfinUrl, "web/").ToString();

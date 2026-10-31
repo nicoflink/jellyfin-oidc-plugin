@@ -57,7 +57,7 @@ public sealed class HarnessTests(E2EEnvironment environment)
         await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/login").ToString());
         await page.GetByLabel("User").FillAsync(E2EEnvironment.JellyfinAdminName);
         await page.GetByLabel("Password").FillAsync(E2EEnvironment.JellyfinAdminPassword);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In" }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In", Exact = true }).ClickAsync();
         await page.WaitForURLAsync(url => url.Contains("#/home", StringComparison.Ordinal));
 
         using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
