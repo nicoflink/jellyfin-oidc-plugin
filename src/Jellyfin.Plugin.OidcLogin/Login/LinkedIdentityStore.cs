@@ -75,6 +75,27 @@ public sealed class LinkedIdentityStore
     }
 
     /// <summary>
+    /// Removes the link of a Jellyfin user.
+    /// </summary>
+    /// <param name="userId">The Jellyfin user's id.</param>
+    /// <returns><c>true</c> if the user was linked.</returns>
+    public bool RemoveUser(Guid userId)
+    {
+        lock (_lock)
+        {
+            var links = Load();
+            var kept = links.Where(l => l.UserId != userId).ToList();
+            if (kept.Count == links.Count)
+            {
+                return false;
+            }
+
+            Save(kept);
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Records a sign-in of a linked Subject.
     /// </summary>
     /// <param name="issuer">The issuer.</param>
