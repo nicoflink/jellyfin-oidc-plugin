@@ -1,4 +1,4 @@
-<div id="OidcLoginConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+<div id="OidcLoginConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select">
   <style>
     #OidcLoginConfigPage .oidc-step { border: 1px solid rgba(128, 128, 128, .35); border-radius: 6px; margin: 1em 0; padding: 0 1em 1em; }
     #OidcLoginConfigPage .oidc-step > h2 { display: flex; gap: .75em; align-items: center; }
@@ -9,6 +9,10 @@
     #OidcLoginConfigPage .oidc-warning { border-left: 4px solid #e5a00d; padding: .5em 1em; margin: .5em 0; background: rgba(229, 160, 13, .12); }
     #OidcLoginConfigPage .oidc-ok { color: #52b54b; }
     #OidcLoginConfigPage .oidc-error { color: #cc3333; }
+    #OidcLoginConfigPage .oidc-table { width: 100%; border-collapse: collapse; }
+    #OidcLoginConfigPage .oidc-table th, #OidcLoginConfigPage .oidc-table td { text-align: left; padding: .4em .6em; border-bottom: 1px solid rgba(128, 128, 128, .35); }
+    #OidcLoginConfigPage .oidc-table td:first-child { word-break: break-all; }
+    #OidcLoginConfigPage .oidc-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
     #OidcLoginConfigPage [hidden] { display: none !important; }
   </style>
   <div data-role="content">
@@ -126,6 +130,37 @@
           <div id="oidcSaveResult" role="status"></div>
         </div>
       </form>
+
+      <div id="oidcLinkedIdentitiesSection" class="verticalSection">
+        <h2 class="sectionTitle">Linked Identities</h2>
+        <p>Who signs in how: each Subject at your Identity Provider reaches exactly one Jellyfin user. Unlinking keeps the Jellyfin user; that Subject's next sign-in is treated as new.</p>
+        <div style="overflow-x: auto;">
+          <table id="oidcLinkedIdentities" class="oidc-table">
+            <thead>
+              <tr><th scope="col">Subject</th><th scope="col">Jellyfin user</th><th scope="col">Linked</th><th scope="col">Last sign-in</th><th scope="col"><span class="oidc-visually-hidden">Actions</span></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="oidcLinkedIdentitiesEmpty" hidden>No Linked Identities yet.</p>
+        <div id="oidcUnlinkResult" role="status" hidden></div>
+
+        <form class="oidcLinkForm">
+          <h3>Link an existing Jellyfin user</h3>
+          <p>Moves a Jellyfin user to OIDC Login: their next sign-in with this <code>sub</code> at the configured Issuer URL reaches them.</p>
+          <div class="selectContainer">
+            <label class="selectLabel" for="oidcLinkUser">Jellyfin user</label>
+            <select id="oidcLinkUser" is="emby-select" required></select>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcLinkSub">Subject (sub)</label>
+            <input id="oidcLinkSub" type="text" is="emby-input" autocomplete="off" required />
+            <div class="fieldDescription">The person's <code>sub</code> claim, as your Identity Provider shows it.</div>
+          </div>
+          <button is="emby-button" type="submit" class="raised"><span>Link</span></button>
+          <div id="oidcLinkResult" role="status" hidden></div>
+        </form>
+      </div>
     </div>
   </div>
 
@@ -218,8 +253,98 @@
           clientSecretSet = result.clientSecretSet;
           linkedIdentityCount = result.linkedIdentityCount;
           render();
+          return loadLinkedIdentities();
         }).finally(function () {
           Dashboard.hideLoadingMsg();
+        });
+      }
+
+      function formatDate(text) {
+        return text ? new Date(text).toLocaleString() : 'Never';
+      }
+
+      function cell(row, text) {
+        var td = document.createElement('td');
+        td.textContent = text;
+        row.appendChild(td);
+        return td;
+      }
+
+      function loadLinkedIdentities() {
+        return Promise.all([
+          ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('OidcLogin/LinkedIdentities'), dataType: 'json' }),
+          ApiClient.getUsers()
+        ]).then(function (results) {
+          var links = results[0];
+          var users = results[1];
+          linkedIdentityCount = links.length;
+          render();
+
+          var body = page.querySelector('#oidcLinkedIdentities tbody');
+          body.textContent = '';
+          links.forEach(function (link) {
+            var row = document.createElement('tr');
+            cell(row, link.subject).title = link.issuer;
+            cell(row, link.userName || 'Deleted user ' + link.userId);
+            cell(row, formatDate(link.linkedAt));
+            cell(row, formatDate(link.lastLoginAt));
+            var unlink = document.createElement('button');
+            unlink.type = 'button';
+            unlink.className = 'raised';
+            unlink.textContent = 'Unlink';
+            unlink.addEventListener('click', function () { unlinkUser(link); });
+            cell(row, '').appendChild(unlink);
+            body.appendChild(row);
+          });
+          field('oidcLinkedIdentities').hidden = links.length === 0;
+          field('oidcLinkedIdentitiesEmpty').hidden = links.length > 0;
+
+          var picker = field('oidcLinkUser');
+          var selected = picker.value;
+          picker.textContent = '';
+          users.slice().sort(function (a, b) { return a.Name.localeCompare(b.Name); }).forEach(function (user) {
+            var option = document.createElement('option');
+            option.value = user.Id;
+            option.textContent = user.Name;
+            picker.appendChild(option);
+          });
+          if (selected) picker.value = selected;
+        });
+      }
+
+      function unlinkUser(link) {
+        var name = link.userName || 'the deleted user';
+        if (!window.confirm('Unlink ' + name + ' from Subject ' + link.subject + '? ' + name + ' stays; the Subject\'s next sign-in is treated as new.')) {
+          return;
+        }
+
+        show('oidcUnlinkResult', '');
+        ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl('OidcLogin/LinkedIdentities/' + encodeURIComponent(link.userId)) }).then(function () {
+          return load();
+        }, function () {
+          show('oidcUnlinkResult', 'Unlinking failed.', 'oidc-error');
+        });
+      }
+
+      function linkUser() {
+        show('oidcLinkResult', '');
+        fetch(ApiClient.getUrl('OidcLogin/LinkedIdentities'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'MediaBrowser Token="' + ApiClient.accessToken() + '"' },
+          body: JSON.stringify({ userId: field('oidcLinkUser').value, subject: value('oidcLinkSub') })
+        }).then(function (response) {
+          if (response.ok) {
+            field('oidcLinkSub').value = '';
+            return load().then(function () { show('oidcLinkResult', 'Linked.', 'oidc-ok'); });
+          }
+
+          return response.json().then(function (result) {
+            show('oidcLinkResult', result.message, 'oidc-error');
+          }, function () {
+            show('oidcLinkResult', 'Linking failed.', 'oidc-error');
+          });
+        }, function () {
+          show('oidcLinkResult', 'Linking failed.', 'oidc-error');
         });
       }
 
@@ -302,6 +427,10 @@
       page.querySelector('.oidcConfigForm').addEventListener('submit', function (e) {
         e.preventDefault();
         save();
+      });
+      page.querySelector('.oidcLinkForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        linkUser();
       });
       field('oidcTestConnection').addEventListener('click', testConnection);
       field('oidcCopyCallback').addEventListener('click', copyCallback);
