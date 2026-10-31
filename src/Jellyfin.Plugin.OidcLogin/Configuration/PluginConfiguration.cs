@@ -41,4 +41,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the ID token claim holding the person's Identity Provider group names.
     /// </summary>
     public string GroupsClaim { get; set; } = "groups";
+
+    /// <summary>
+    /// Gets or sets the Identity Provider group whose members are Jellyfin administrators; empty turns Admin Group
+    /// sync off.
+    /// </summary>
+    public string AdminGroup { get; set; } = string.Empty;
 }

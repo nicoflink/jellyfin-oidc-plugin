@@ -7,7 +7,7 @@ using Xunit;
 namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 
 /// <summary>
-/// The whole OIDC Login (scenario 1 without the button): from <c>/OidcLogin/Start</c> to signed in on Jellyfin's
+/// The whole OIDC Login (scenarios 1 without the button, and 2): from <c>/OidcLogin/Start</c> to signed in on Jellyfin's
 /// home page, in the same tab.
 /// </summary>
 public sealed class LoginCompleteTests(E2EEnvironment environment)
@@ -37,6 +37,38 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
         var device = Assert.Single(devices.GetProperty("Items").EnumerateArray(), d => d.GetProperty("Id").GetString() == second.DeviceId);
         Assert.Equal("Jellyfin Web", device.GetProperty("AppName").GetString());
         Assert.Equal("Chrome", device.GetProperty("Name").GetString());
+    }
+
+    /// <summary>
+    /// Scenario 2: repeat logins as the same user follow the Admin Group. Runs in this class so it never overlaps the
+    /// test above, which expects Alice not to be an administrator.
+    /// </summary>
+    [Fact]
+    public async Task RepeatLoginsPromoteAndDemoteWithTheAdminGroup()
+    {
+        var (aliceId, _, _) = await SignInAsync();
+        try
+        {
+            await environment.SetAliceGroupsAsync(admin: true);
+            Assert.Equal(aliceId, (await SignInAsync()).UserId);
+            Assert.True(await IsAdministratorAsync(aliceId));
+
+            await environment.SetAliceGroupsAsync(admin: false);
+            Assert.Equal(aliceId, (await SignInAsync()).UserId);
+            Assert.False(await IsAdministratorAsync(aliceId));
+        }
+        finally
+        {
+            await environment.SetAliceGroupsAsync(admin: false);
+        }
+    }
+
+    private async Task<bool> IsAdministratorAsync(Guid userId)
+    {
+        using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
+        var adminToken = await jellyfin.AuthenticateAsync(E2EEnvironment.JellyfinAdminName, E2EEnvironment.JellyfinAdminPassword, TestContext.Current.CancellationToken);
+        var user = await jellyfin.GetAsync($"Users/{userId}", adminToken, TestContext.Current.CancellationToken);
+        return user.GetProperty("Policy").GetProperty("IsAdministrator").GetBoolean();
     }
 
     /// <summary>
