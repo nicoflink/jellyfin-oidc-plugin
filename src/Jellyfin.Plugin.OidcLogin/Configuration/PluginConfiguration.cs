@@ -43,6 +43,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public string GroupsClaim { get; set; } = "groups";
 
     /// <summary>
+    /// Gets or sets the Identity Provider group whose members are Jellyfin administrators; empty turns Admin Group
+    /// sync off.
+    /// </summary>
+    public string AdminGroup { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets a value indicating whether the Login Entry Point button shows on the web login page.
     /// </summary>
     public bool ShowSignInButton { get; set; }
