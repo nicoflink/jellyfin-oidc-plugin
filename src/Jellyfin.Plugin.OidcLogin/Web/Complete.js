@@ -56,10 +56,14 @@
     }
 
     // Shows the error page for a failure, which renders the category's message and the reference code.
-    function showError(category, reference) {
+    function showError(category, reference, notNow) {
         var query = new URLSearchParams({ category: String(category) });
         if (reference) {
             query.set('ref', String(reference));
+        }
+
+        if (notNow === true) {
+            query.set('notNow', 'true');
         }
 
         window.location.replace('Error?' + query.toString());
@@ -77,7 +81,7 @@
     }).then(function (response) {
         return response.json().then(function (body) {
             if (!response.ok) {
-                showError(body.category, body.ref);
+                showError(body.category, body.ref, body.notNow);
                 return;
             }
 
