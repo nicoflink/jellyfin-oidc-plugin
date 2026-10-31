@@ -1,86 +1,46 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net.Http;
-using System.Text.Json;
 using System.Threading.Tasks;
-using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
-using MediaBrowser.Controller.Authentication;
-using MediaBrowser.Controller.Session;
-using MediaBrowser.Model.Dto;
-using Microsoft.AspNetCore.DataProtection;
-using Microsoft.AspNetCore.WebUtilities;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Time.Testing;
-using NSubstitute;
 using Xunit;
 
 namespace Jellyfin.Plugin.OidcLogin.Tests;
 
 public sealed class LoginCompleteTests : IDisposable
 {
-    private const string PublicOrigin = "https://jellyfin.example.test";
-    private const string DeviceId = "TW96aWxsYS81LjAgKFgxMTsgTGludXggeDg2XzY0KSBDaHJvbWUvMTQwfDE3NjE4MjU2MDAwMDA1";
-    private const string ChromeUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
-
-    private readonly StubIdentityProvider _identityProvider = new();
-    private readonly FakeTimeProvider _clock = new(new DateTimeOffset(2026, 10, 30, 12, 0, 0, TimeSpan.Zero));
-    private readonly EphemeralDataProtectionProvider _dataProtection = new();
-    private readonly InMemoryUsers _users = new();
-    private readonly ISessionManager _sessions = Substitute.For<ISessionManager>();
-    private readonly List<AuthenticationRequest> _sessionRequests = [];
-    private readonly string _dataFolder = Directory.CreateTempSubdirectory("oidclogin-tests").FullName;
-    private readonly PluginConfiguration _configuration = new()
-    {
-        PublicJellyfinUrl = PublicOrigin + "/",
-        IssuerUrl = StubIdentityProvider.Issuer,
-        ClientId = "jellyfin",
-        ClientSecret = "client-secret",
-    };
+    private readonly LoginHarness _login = new();
 
     public LoginCompleteTests()
     {
-        _sessions.AuthenticateDirect(Arg.Any<AuthenticationRequest>()).Returns(call =>
-        {
-            var request = call.Arg<AuthenticationRequest>();
-            _sessionRequests.Add(request);
-            return Task.FromResult(new AuthenticationResult
-            {
-                AccessToken = "session-token-" + _sessionRequests.Count,
-                ServerId = "server-id",
-                User = new UserDto { Id = request.UserId },
-            });
-        });
+        _login.Configuration.PublicJellyfinUrl = LoginHarness.PublicOrigin + "/";
     }
 
     [Fact]
     public async Task HandoffCodeBecomesAJellyfinSessionForTheResolvedUser()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
         Assert.Null(result.Failure);
-        var user = Assert.Single(_users.All);
+        var user = Assert.Single(_login.Users.All);
         Assert.Equal("session-token-1", result.Session!.AccessToken);
         Assert.Equal(user.Id, result.Session.UserId);
         Assert.Equal("server-id", result.Session.ServerId);
-        var request = Assert.Single(_sessionRequests);
+        var request = Assert.Single(_login.SessionRequests);
         Assert.Equal(user.Id, request.UserId);
-        Assert.Equal(DeviceId, request.DeviceId);
+        Assert.Equal(LoginHarness.DeviceId, request.DeviceId);
     }
 
     [Fact]
     public async Task SessionIsCreatedAsJellyfinWebWouldCreateIt()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        var request = Assert.Single(_sessionRequests);
+        var request = Assert.Single(_login.SessionRequests);
         Assert.Equal("Jellyfin Web", request.App);
         Assert.Equal("12.4.0", request.AppVersion);
         Assert.Equal("Chrome", request.DeviceName);
@@ -97,21 +57,21 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData(null, "Web Browser")]
     public async Task DeviceNameIsTheBrowserNameJellyfinWebWouldSend(string? userAgent, string deviceName)
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        await service.CompleteAsync(Request(code, cookie) with { UserAgent = userAgent }, TestContext.Current.CancellationToken);
+        await service.CompleteAsync(LoginHarness.Completion(code, cookie) with { UserAgent = userAgent }, TestContext.Current.CancellationToken);
 
-        Assert.Equal(deviceName, Assert.Single(_sessionRequests).DeviceName);
+        Assert.Equal(deviceName, Assert.Single(_login.SessionRequests).DeviceName);
     }
 
     [Fact]
     public async Task ClearsTheFlowCookie()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
         Assert.Equal(FlowCookieProtector.SecureCookieName, result.ClearedFlowCookie!.Name);
         Assert.Equal("/", result.ClearedFlowCookie.Options.Path);
@@ -121,12 +81,12 @@ public sealed class LoginCompleteTests : IDisposable
     [Fact]
     public async Task ARepeatLoginGetsANewSessionForTheSameUser()
     {
-        var service = CreateService();
-        var (firstCode, firstCookie) = await SignInAsync(service);
-        var first = await service.CompleteAsync(Request(firstCode, firstCookie), TestContext.Current.CancellationToken);
-        var (secondCode, secondCookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (firstCode, firstCookie) = await _login.HandoffAsync(service);
+        var first = await service.CompleteAsync(LoginHarness.Completion(firstCode, firstCookie), TestContext.Current.CancellationToken);
+        var (secondCode, secondCookie) = await _login.HandoffAsync(service);
 
-        var second = await service.CompleteAsync(Request(secondCode, secondCookie), TestContext.Current.CancellationToken);
+        var second = await service.CompleteAsync(LoginHarness.Completion(secondCode, secondCookie), TestContext.Current.CancellationToken);
 
         Assert.Equal(first.Session!.UserId, second.Session!.UserId);
         Assert.NotEqual(first.Session.AccessToken, second.Session.AccessToken);
@@ -135,39 +95,39 @@ public sealed class LoginCompleteTests : IDisposable
     [Fact]
     public async Task HandoffCodeIsSingleUse()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
-        await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
+        await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        var reuse = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var reuse = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(reuse, FailureCategory.Expired);
-        Assert.Single(_sessionRequests);
+        LoginHarness.AssertRefused(reuse, FailureCategory.Expired);
+        Assert.Single(_login.SessionRequests);
     }
 
     [Fact]
     public async Task HandoffCodePresentedWithAnotherFlowCookieIsRefusedAndUsedUp()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
-        var (_, otherCookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
+        var (_, otherCookie) = await _login.HandoffAsync(service);
 
-        var mismatch = await service.CompleteAsync(Request(code, otherCookie), TestContext.Current.CancellationToken);
-        var retry = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var mismatch = await service.CompleteAsync(LoginHarness.Completion(code, otherCookie), TestContext.Current.CancellationToken);
+        var retry = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(mismatch, FailureCategory.Expired);
-        AssertRefused(retry, FailureCategory.Expired);
+        LoginHarness.AssertRefused(mismatch, FailureCategory.Expired);
+        LoginHarness.AssertRefused(retry, FailureCategory.Expired);
     }
 
     [Fact]
     public async Task MissingFlowCookieIsRefused()
     {
-        var service = CreateService();
-        var (code, _) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, _) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, null), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, null), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Expired);
+        LoginHarness.AssertRefused(result, FailureCategory.Expired);
     }
 
     [Theory]
@@ -175,11 +135,11 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData(30, false)]
     public async Task HandoffCodeLivesThirtySeconds(int secondsLater, bool accepted)
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
-        _clock.Advance(TimeSpan.FromSeconds(secondsLater));
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
+        _login.Clock.Advance(TimeSpan.FromSeconds(secondsLater));
 
-        var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
         if (accepted)
         {
@@ -187,7 +147,7 @@ public sealed class LoginCompleteTests : IDisposable
         }
         else
         {
-            AssertRefused(result, FailureCategory.Expired);
+            LoginHarness.AssertRefused(result, FailureCategory.Expired);
         }
     }
 
@@ -200,24 +160,24 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData("https://sub.jellyfin.example.test")]
     public async Task RequestFromAnotherOriginIsRefusedWithoutUsingTheCode(string? origin)
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie) with { Origin = origin }, TestContext.Current.CancellationToken);
-        var retry = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie) with { Origin = origin }, TestContext.Current.CancellationToken);
+        var retry = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        LoginHarness.AssertRefused(result, FailureCategory.Failed);
         Assert.NotNull(retry.Session);
     }
 
     [Fact]
     public async Task OriginMatchesThePublicJellyfinUrlIgnoringCaseAndItsPath()
     {
-        _configuration.PublicJellyfinUrl = "https://Jellyfin.Example.Test/jellyfin/";
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        _login.Configuration.PublicJellyfinUrl = "https://Jellyfin.Example.Test/jellyfin/";
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
         Assert.NotNull(result.Session);
     }
@@ -229,23 +189,23 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData("multipart/form-data; boundary=x")]
     public async Task NonJsonRequestIsRefusedWithoutUsingTheCode(string? contentType)
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie) with { ContentType = contentType }, TestContext.Current.CancellationToken);
-        var retry = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie) with { ContentType = contentType }, TestContext.Current.CancellationToken);
+        var retry = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        LoginHarness.AssertRefused(result, FailureCategory.Failed);
         Assert.NotNull(retry.Session);
     }
 
     [Fact]
     public async Task JsonWithACharsetIsAccepted()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie) with { ContentType = "application/json; charset=utf-8" }, TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie) with { ContentType = "application/json; charset=utf-8" }, TestContext.Current.CancellationToken);
 
         Assert.NotNull(result.Session);
     }
@@ -257,25 +217,25 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData("comma,inside")]
     public async Task MalformedDeviceIdIsRefusedWithoutUsingTheCode(string deviceId)
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie, deviceId), TestContext.Current.CancellationToken);
-        var retry = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie, deviceId), TestContext.Current.CancellationToken);
+        var retry = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        LoginHarness.AssertRefused(result, FailureCategory.Failed);
         Assert.NotNull(retry.Session);
     }
 
     [Fact]
     public async Task OverlongDeviceIdIsRefused()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request(code, cookie, new string('a', 513)), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie, new string('a', 513)), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        LoginHarness.AssertRefused(result, FailureCategory.Failed);
     }
 
     [Theory]
@@ -286,85 +246,25 @@ public sealed class LoginCompleteTests : IDisposable
     [InlineData("{\"code\":42,\"deviceId\":\"abc\"}")]
     public async Task MalformedBodyIsRefused(string body)
     {
-        var service = CreateService();
-        var (_, cookie) = await SignInAsync(service);
+        var service = _login.CreateService();
+        var (_, cookie) = await _login.HandoffAsync(service);
 
-        var result = await service.CompleteAsync(Request("unused", cookie) with { Body = body }, TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion("unused", cookie) with { Body = body }, TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        LoginHarness.AssertRefused(result, FailureCategory.Failed);
     }
 
     [Fact]
     public async Task UserDeletedSinceTheCallbackIsExpiredSoThePersonJustRetries()
     {
-        var service = CreateService();
-        var (code, cookie) = await SignInAsync(service);
-        _users.Remove(_users.All[0]);
+        var service = _login.CreateService();
+        var (code, cookie) = await _login.HandoffAsync(service);
+        _login.Users.Remove(_login.Users.All[0]);
 
-        var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
+        var result = await service.CompleteAsync(LoginHarness.Completion(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Expired);
+        LoginHarness.AssertRefused(result, FailureCategory.Expired);
     }
 
-    public void Dispose()
-    {
-        _identityProvider.Dispose();
-        Directory.Delete(_dataFolder, recursive: true);
-    }
-
-    private static CompleteRequest Request(string code, string? flowCookie, string deviceId = DeviceId) => new(
-        PublicOrigin,
-        "application/json",
-        JsonSerializer.Serialize(new Dictionary<string, string> { ["code"] = code, ["deviceId"] = deviceId }),
-        flowCookie,
-        ChromeUserAgent,
-        "203.0.113.7");
-
-    private void AssertRefused(CompleteResult result, FailureCategory category)
-    {
-        Assert.Equal(category, result.Failure?.Category);
-        Assert.Null(result.Session);
-        Assert.Null(result.ClearedFlowCookie);
-    }
-
-    /// <summary>
-    /// Runs Start and Callback against the stub Identity Provider, returning the handoff code and flow cookie the
-    /// browser holds on the Complete page.
-    /// </summary>
-    private async Task<(string HandoffCode, string FlowCookie)> SignInAsync(OidcLoginService service)
-    {
-        var start = await service.StartAsync(TestContext.Current.CancellationToken);
-        var authorize = QueryHelpers.ParseQuery(start.AuthorizationUrl!.Query);
-        var now = _clock.GetUtcNow();
-        _identityProvider.IdToken = _identityProvider.Sign(new Dictionary<string, object>
-        {
-            ["iss"] = StubIdentityProvider.Issuer,
-            ["aud"] = _configuration.ClientId,
-            ["sub"] = "6a3f1c2e-sub",
-            ["nonce"] = authorize["nonce"].ToString(),
-            ["iat"] = now.ToUnixTimeSeconds(),
-            ["exp"] = (now + TimeSpan.FromMinutes(5)).ToUnixTimeSeconds(),
-            ["preferred_username"] = "alice",
-        });
-        var flowCookie = start.FlowCookie!.Value;
-        var callback = await service.CallbackAsync(new CallbackQuery("authorization-code", authorize["state"]), flowCookie, TestContext.Current.CancellationToken);
-        return (callback.HandoffCode!, flowCookie);
-    }
-
-    private OidcLoginService CreateService()
-    {
-        var httpClientFactory = Substitute.For<IHttpClientFactory>();
-        httpClientFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(_identityProvider, disposeHandler: false));
-        return new OidcLoginService(
-            new IdentityProviderClient(httpClientFactory),
-            new FlowCookieProtector(_dataProtection),
-            _users.Manager,
-            _sessions,
-            new LinkedIdentityStore(_dataFolder),
-            new HandoffCodes(_clock),
-            _clock,
-            () => _configuration,
-            new JellyfinWebClient("12.4.0"),
-            NullLogger<OidcLoginService>.Instance);
-    }
+    public void Dispose() => _login.Dispose();
 }
