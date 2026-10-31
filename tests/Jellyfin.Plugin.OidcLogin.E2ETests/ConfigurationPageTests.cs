@@ -1,7 +1,6 @@
 using System;
 using System.Net;
 using System.Net.Http;
-using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
 using Xunit;
@@ -45,11 +44,11 @@ public sealed class ConfigurationPageTests(E2EEnvironment environment)
     public async Task AdminWalksThroughTheGuidedSetupAndSaves()
     {
         // A Linked Identity exists, so changing the Issuer URL would orphan it.
-        await SignInWithPasskeyAsync();
+        await environment.SignInWithPasskeyAsync();
 
         await using var session = await environment.NewSessionAsync();
         var page = session.Page;
-        await LocalLoginAsAdminAsync(page);
+        await environment.LocalLoginAsAdminAsync(page);
         await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/configurationpage?name=OidcLogin").ToString());
 
         // Step 1: the callback is derived from the Public Jellyfin URL.
@@ -110,34 +109,6 @@ public sealed class ConfigurationPageTests(E2EEnvironment environment)
         await configPage.GetByLabel("Required Group").FillAsync(string.Empty);
         await configPage.GetByRole(AriaRole.Button, new() { Name = "Save" }).ClickAsync();
         await Assertions.Expect(configPage.Locator("#oidcSaveResult")).ToHaveTextAsync("Saved.");
-        await SignInWithPasskeyAsync();
-    }
-
-    private async Task LocalLoginAsAdminAsync(IPage page)
-    {
-        await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/login").ToString());
-        var manualLogin = page.GetByRole(AriaRole.Button, new() { Name = "Manual Login" });
-        var userName = page.GetByLabel("User");
-        await Assertions.Expect(manualLogin.Or(userName).First).ToBeVisibleAsync();
-        if (!await userName.IsVisibleAsync())
-        {
-            await manualLogin.ClickAsync();
-        }
-
-        await userName.FillAsync(E2EEnvironment.JellyfinAdminName);
-        await page.GetByLabel("Password").FillAsync(E2EEnvironment.JellyfinAdminPassword);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(url => url.Contains("#/home", StringComparison.Ordinal));
-    }
-
-    private async Task SignInWithPasskeyAsync()
-    {
-        await using var session = await environment.NewSessionAsync(withAlicePasskey: true);
-        var page = session.Page;
-        await page.GotoAsync(new Uri(environment.JellyfinUrl, "OidcLogin/Start").ToString());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(url => url.Contains("/web/", StringComparison.Ordinal) && url.Contains("#/home", StringComparison.Ordinal));
-        var credentials = JsonDocument.Parse(await page.EvaluateAsync<string>("() => localStorage.getItem('jellyfin_credentials')")).RootElement;
-        Assert.Single(credentials.GetProperty("Servers").EnumerateArray());
+        await environment.SignInWithPasskeyAsync();
     }
 }
