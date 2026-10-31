@@ -58,6 +58,11 @@ internal sealed class StubIdentityProvider : HttpMessageHandler
     public string[]? ScopesSupported { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether discovery advertises <c>authorization_response_iss_parameter_supported</c>.
+    /// </summary>
+    public bool AdvertisesIssParameter { get; set; }
+
+    /// <summary>
     /// Gets or sets the <c>issuer</c> discovery claims.
     /// </summary>
     public string DiscoveryIssuer { get; set; } = Issuer;
@@ -155,6 +160,7 @@ internal sealed class StubIdentityProvider : HttpMessageHandler
                 {
                   "issuer": "{{DiscoveryIssuer}}",
                   {{(ScopesSupported is null ? string.Empty : $"\"scopes_supported\": {JsonSerializer.Serialize(ScopesSupported)},")}}
+                  {{(AdvertisesIssParameter ? "\"authorization_response_iss_parameter_supported\": true," : string.Empty)}}
                   {{(OmitAuthorizationEndpoint ? string.Empty : $"\"authorization_endpoint\": \"{AuthorizationEndpoint}\",")}}
                   "token_endpoint": "{{TokenEndpoint}}",
                   "jwks_uri": "{{JwksUri}}",

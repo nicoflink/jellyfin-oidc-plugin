@@ -189,7 +189,28 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
         }
 
+        // Discovery is cached since Start; it's needed before the iss check to know whether iss is required.
+        OpenIdConnectConfiguration discovery;
+        try
+        {
+            discovery = await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+        catch (IdentityProviderException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryInvalid(e)));
+        }
+
         // RFC 9207: on success and error alike. Discovery's issuer must equal the Issuer URL exactly, so this is it.
+        // An Identity Provider that advertises iss must send it, or a mix-up attacker could simply leave it out.
+        if (query.Iss is null && discovery.AuthorizationResponseIssParameterSupported)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no iss, though discovery advertises authorization_response_iss_parameter_supported.")));
+        }
+
         if (query.Iss is not null && !string.Equals(query.Iss, issuer.OriginalString, StringComparison.Ordinal))
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"The callback's iss {LogText.Quote(query.Iss, 256)} isn't the Issuer URL.")));
@@ -204,20 +225,6 @@ public sealed partial class OidcLoginService : IDisposable
         if (string.IsNullOrEmpty(query.Code))
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no authorization code.")));
-        }
-
-        OpenIdConnectConfiguration discovery;
-        try
-        {
-            discovery = await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException e)
-        {
-            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
-        }
-        catch (IdentityProviderException e)
-        {
-            return CallbackResult.Fail(Log(DiscoveryInvalid(e)));
         }
 
         if (!Uri.TryCreate(discovery.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
