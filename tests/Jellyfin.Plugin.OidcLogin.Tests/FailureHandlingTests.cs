@@ -108,6 +108,18 @@ public sealed partial class FailureHandlingTests : IDisposable
     }
 
     [Fact]
+    public async Task AccessDeniedIsCancelledEvenWhileDiscoveryIsUnreachable()
+    {
+        var (query, cookie) = await SignInAsync(CreateService());
+
+        // Jellyfin restarted since Start, so discovery isn't cached, and the Identity Provider has gone down.
+        _identityProvider.IsDown = true;
+        var result = await CreateService().CallbackAsync(new CallbackQuery(null, query.State, "access_denied", "The user cancelled"), cookie, TestContext.Current.CancellationToken);
+
+        AssertLoggedOnce(result.Failure, FailureCategory.Cancelled, 400, LogLevel.Information);
+    }
+
+    [Fact]
     public async Task AccessDeniedWithAnotherStateIsExpired()
     {
         var service = CreateService();

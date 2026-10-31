@@ -126,21 +126,13 @@ public sealed partial class OidcLoginService : IDisposable
             return StartResult.RedirectToPublicHost(new Uri(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Start?" + RedirectedToPublicHostParameter + "=true"));
         }
 
-        OpenIdConnectConfiguration discovery;
-        try
+        var (discovery, discoveryFailure) = await GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
+        if (discoveryFailure is not null)
         {
-            discovery = await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException e)
-        {
-            return StartResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
-        }
-        catch (IdentityProviderException e)
-        {
-            return StartResult.Fail(Log(DiscoveryInvalid(e)));
+            return StartResult.Fail(Log(discoveryFailure));
         }
 
-        if (string.IsNullOrEmpty(discovery.AuthorizationEndpoint))
+        if (string.IsNullOrEmpty(discovery!.AuthorizationEndpoint))
         {
             return StartResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no authorization_endpoint.") { Level = LogLevel.Error }));
         }
@@ -189,31 +181,25 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
         }
 
-        // Discovery is cached since Start; it's needed before the iss check to know whether iss is required.
-        OpenIdConnectConfiguration discovery;
-        try
-        {
-            discovery = await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException e)
-        {
-            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
-        }
-        catch (IdentityProviderException e)
-        {
-            return CallbackResult.Fail(Log(DiscoveryInvalid(e)));
-        }
-
         // RFC 9207: on success and error alike. Discovery's issuer must equal the Issuer URL exactly, so this is it.
-        // An Identity Provider that advertises iss must send it, or a mix-up attacker could simply leave it out.
-        if (query.Iss is null && discovery.AuthorizationResponseIssParameterSupported)
-        {
-            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no iss, though discovery advertises authorization_response_iss_parameter_supported.")));
-        }
-
         if (query.Iss is not null && !string.Equals(query.Iss, issuer.OriginalString, StringComparison.Ordinal))
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"The callback's iss {LogText.Quote(query.Iss, 256)} isn't the Issuer URL.")));
+        }
+
+        // Discovery is cached since Start; it says whether iss is required.
+        var (discovery, discoveryFailure) = await GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
+        if (discoveryFailure is not null)
+        {
+            // An error response grants nothing, so it is still reported as what it is: a person who cancelled is
+            // Cancelled even while the Identity Provider can't be reached.
+            return CallbackResult.Fail(Log(query.Error is null ? discoveryFailure : IdentityProviderError(query.Error, query.ErrorDescription)));
+        }
+
+        // An Identity Provider that advertises iss must send it, or a mix-up attacker could simply leave it out.
+        if (query.Iss is null && discovery!.AuthorizationResponseIssParameterSupported)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no iss, though discovery advertises authorization_response_iss_parameter_supported.")));
         }
 
         // Only after the state check: an unbound error response could otherwise be planted on someone's login.
@@ -227,7 +213,7 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no authorization code.")));
         }
 
-        if (!Uri.TryCreate(discovery.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
+        if (!Uri.TryCreate(discovery!.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no token_endpoint.") { Level = LogLevel.Error }));
         }
@@ -419,8 +405,25 @@ public sealed partial class OidcLoginService : IDisposable
     private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
         => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
 
-    private static LoginFailure DiscoveryInvalid(IdentityProviderException e)
-        => new(FailureCategory.Failed, e.Message) { Level = LogLevel.Error };
+    /// <summary>
+    /// Fetches discovery, cached by <see cref="IdentityProviderClient"/>: Unavailable when it can't be reached,
+    /// Failed when it isn't valid for the Issuer URL.
+    /// </summary>
+    private async Task<(OpenIdConnectConfiguration? Discovery, LoginFailure? Failure)> GetDiscoveryAsync(Uri issuer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false), null);
+        }
+        catch (InvalidOperationException e)
+        {
+            return (null, DiscoveryUnavailable(issuer, e));
+        }
+        catch (IdentityProviderException e)
+        {
+            return (null, new LoginFailure(FailureCategory.Failed, e.Message) { Level = LogLevel.Error });
+        }
+    }
 
     private static bool TryGetSettings(PluginConfiguration configuration, [NotNullWhen(true)] out Uri? publicUrl, [NotNullWhen(true)] out Uri? issuer)
     {
