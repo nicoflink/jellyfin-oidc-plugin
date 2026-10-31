@@ -32,9 +32,14 @@ namespace Jellyfin.Plugin.OidcLogin.Login;
 /// </summary>
 public sealed partial class OidcLoginService : IDisposable
 {
+    /// <summary>
+    /// The query parameter marking Start reached through its redirect to the Public Jellyfin URL's host.
+    /// </summary>
+    public const string RedirectedToPublicHostParameter = "redirected";
+
     private static readonly TimeSpan FlowLifetime = TimeSpan.FromMinutes(10);
 
-    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required.") { Level = LogLevel.Error };
+    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required, and the Issuer URL must be https unless its host is loopback.") { Level = LogLevel.Error };
 
     private readonly IdentityProviderClient _identityProvider;
     private readonly FlowCookieProtector _flowCookie;
@@ -91,16 +96,34 @@ public sealed partial class OidcLoginService : IDisposable
     }
 
     /// <summary>
-    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie.
+    /// Starts an OIDC Login for a request already on the Public Jellyfin URL's host.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The redirect and flow cookie, or a failure.</returns>
-    public async Task<StartResult> StartAsync(CancellationToken cancellationToken)
+    public Task<StartResult> StartAsync(CancellationToken cancellationToken) => StartAsync(new StartRequest(null), cancellationToken);
+
+    /// <summary>
+    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie. A
+    /// request on another host is first sent to Start on the Public Jellyfin URL's host, where the Identity Provider
+    /// returns to and so where the flow cookie must be set.
+    /// </summary>
+    /// <param name="request">The browser's request.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The redirect and flow cookie, a redirect to the public host, or a failure.</returns>
+    public async Task<StartResult> StartAsync(StartRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var configuration = _configuration();
         if (!TryGetSettings(configuration, out var publicUrl, out var issuer))
         {
             return StartResult.Fail(Log(NotConfigured));
+        }
+
+        // Once only: a proxy that rewrites Host would otherwise loop. The target is the configured URL, so this is
+        // no open redirect.
+        if (request.Host is not null && !request.RedirectedToPublicHost && !IsHost(request.Host, publicUrl))
+        {
+            return StartResult.RedirectToPublicHost(new Uri(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Start?" + RedirectedToPublicHostParameter + "=true"));
         }
 
         OpenIdConnectConfiguration discovery;
@@ -111,6 +134,10 @@ public sealed partial class OidcLoginService : IDisposable
         catch (InvalidOperationException e)
         {
             return StartResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+        catch (IdentityProviderException e)
+        {
+            return StartResult.Fail(Log(DiscoveryInvalid(e)));
         }
 
         if (string.IsNullOrEmpty(discovery.AuthorizationEndpoint))
@@ -162,6 +189,12 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
         }
 
+        // RFC 9207: on success and error alike. Discovery's issuer must equal the Issuer URL exactly, so this is it.
+        if (query.Iss is not null && !string.Equals(query.Iss, issuer.OriginalString, StringComparison.Ordinal))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"The callback's iss {LogText.Quote(query.Iss, 256)} isn't the Issuer URL.")));
+        }
+
         // Only after the state check: an unbound error response could otherwise be planted on someone's login.
         if (query.Error is not null)
         {
@@ -181,6 +214,10 @@ public sealed partial class OidcLoginService : IDisposable
         catch (InvalidOperationException e)
         {
             return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+        catch (IdentityProviderException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryInvalid(e)));
         }
 
         if (!Uri.TryCreate(discovery.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
@@ -209,11 +246,15 @@ public sealed partial class OidcLoginService : IDisposable
         JsonWebToken idToken;
         try
         {
-            idToken = await IdentityProviderClient.ValidateIdTokenAsync(rawIdToken, discovery, configuration.ClientId, flow.Nonce, _clock).ConfigureAwait(false);
+            idToken = await _identityProvider.ValidateIdTokenAsync(rawIdToken, issuer, discovery, configuration.ClientId, flow.Nonce, _clock, cancellationToken).ConfigureAwait(false);
         }
         catch (IdentityProviderException e)
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, e.Message)));
+        }
+        catch (InvalidOperationException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
         }
 
         var (user, failure) = await ResolveUserAsync(idToken, configuration).ConfigureAwait(false);
@@ -320,7 +361,7 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
-    /// URL, a client id and a client secret.
+    /// URL (https, or http on a loopback host), a client id and a client secret.
     /// </summary>
     /// <param name="configuration">The plugin configuration.</param>
     /// <returns><c>true</c> when an OIDC Login can start.</returns>
@@ -333,11 +374,15 @@ public sealed partial class OidcLoginService : IDisposable
     private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
         => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
 
+    private static LoginFailure DiscoveryInvalid(IdentityProviderException e)
+        => new(FailureCategory.Failed, e.Message) { Level = LogLevel.Error };
+
     private static bool TryGetSettings(PluginConfiguration configuration, [NotNullWhen(true)] out Uri? publicUrl, [NotNullWhen(true)] out Uri? issuer)
     {
         issuer = null;
         return TryGetHttpUrl(configuration.PublicJellyfinUrl, out publicUrl)
             && TryGetHttpUrl(configuration.IssuerUrl, out issuer)
+            && (issuer.Scheme == Uri.UriSchemeHttps || issuer.IsLoopback)
             && !string.IsNullOrEmpty(configuration.ClientId)
             && !string.IsNullOrEmpty(configuration.ClientSecret);
     }
@@ -357,6 +402,15 @@ public sealed partial class OidcLoginService : IDisposable
             value,
             new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
     }
+
+    /// <summary>
+    /// Whether a <c>Host</c> header names the Public Jellyfin URL's host and port. Its scheme isn't compared: behind
+    /// a TLS-terminating proxy the request is plain http.
+    /// </summary>
+    private static bool IsHost(string host, Uri publicUrl)
+        => Uri.TryCreate(publicUrl.Scheme + "://" + host, UriKind.Absolute, out var requestUrl)
+            && string.Equals(requestUrl.IdnHost, publicUrl.IdnHost, StringComparison.OrdinalIgnoreCase)
+            && requestUrl.Port == publicUrl.Port;
 
     private static bool IsOrigin(string? origin, Uri publicUrl)
         => Uri.TryCreate(origin, UriKind.Absolute, out var originUrl)

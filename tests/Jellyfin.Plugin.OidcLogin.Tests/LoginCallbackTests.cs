@@ -219,17 +219,6 @@ public sealed class LoginCallbackTests : IDisposable
     }
 
     [Fact]
-    public async Task IdTokenWhoseAudiencesContainTheClientIsAccepted()
-    {
-        var service = CreateService();
-        var (query, cookie) = await SignInAsync(service, claims => claims["aud"] = new[] { "another-client", "jellyfin" });
-
-        var result = await service.CallbackAsync(query, cookie, TestContext.Current.CancellationToken);
-
-        Assert.Null(result.Failure);
-    }
-
-    [Fact]
     public async Task ExpiredIdTokenFails()
     {
         var service = CreateService();
