@@ -262,8 +262,9 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(failure));
         }
 
-        // The code travels in the fragment, so it never reaches a server log or a Referer header.
-        var handoffCode = _handoffCodes.Mint(user!.Id, flowCookie!);
+        // The code travels in the fragment, so it never reaches a server log or a Referer header. The groups go
+        // along so Admin Group sync runs only once Complete lets the login through.
+        var handoffCode = _handoffCodes.Mint(user!.Id, flowCookie!, TryGetStrings(idToken, configuration.GroupsClaim, out var groups) ? groups : null);
         return CallbackResult.Handoff(new Uri(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Complete#code=" + handoffCode));
     }
 
@@ -306,20 +307,30 @@ public sealed partial class OidcLoginService : IDisposable
             return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request's device id is malformed.")));
         }
 
-        if (request.FlowCookie is null || _handoffCodes.Consume(handoffCode, request.FlowCookie) is not { } userId)
+        if (request.FlowCookie is null || _handoffCodes.Consume(handoffCode, request.FlowCookie) is not { } handoff)
         {
             return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The handoff code is unknown, used, expired or presented without its flow cookie.")));
         }
 
-        if (_userManager.GetUserById(userId) is not { } user)
+        if (_userManager.GetUserById(handoff.UserId) is not { } user)
         {
             // Retrying resolves the Subject afresh: to a new user, or to whatever its settings now say.
-            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, $"Jellyfin user {userId} was deleted during the login.")));
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, $"Jellyfin user {handoff.UserId} was deleted during the login.")));
         }
 
         if (Refusal(user, request.FromLocalNetwork) is { } refusal)
         {
             return CompleteResult.Fail(Log(refusal));
+        }
+
+        await _resolveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await SyncAdminGroupAsync(user, handoff.Groups, configuration).ConfigureAwait(false);
+        }
+        finally
+        {
+            _resolveLock.Release();
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -504,7 +515,7 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Resolves the ID token's Subject to a Jellyfin user through its Linked Identity, provisioning a user and a link
-    /// when the Subject has none (or its user is gone), then syncs the user's Admin Group membership.
+    /// when the Subject has none (or its user is gone).
     /// </summary>
     private async Task<(User? User, LoginFailure? Failure)> ResolveUserAsync(JsonWebToken idToken, PluginConfiguration configuration)
     {
@@ -523,7 +534,6 @@ public sealed partial class OidcLoginService : IDisposable
             {
                 if (_userManager.GetUserById(link.UserId) is { } linkedUser)
                 {
-                    await SyncAdminGroupAsync(linkedUser, idToken, configuration).ConfigureAwait(false);
                     return (linkedUser, null);
                 }
 
@@ -577,7 +587,6 @@ public sealed partial class OidcLoginService : IDisposable
             }
 
             _linkedIdentities.Add(new LinkedIdentity(issuer, subject, user.Id, now, now));
-            await SyncAdminGroupAsync(user, idToken, configuration).ConfigureAwait(false);
             return (user, null);
         }
         finally
@@ -619,18 +628,19 @@ public sealed partial class OidcLoginService : IDisposable
     private static partial Regex JellyfinUsername();
 
     /// <summary>
-    /// Sets <see cref="PermissionKind.IsAdministrator"/> to Admin Group membership, and nothing else. Skipped when
-    /// the setting is empty or the groups claim is absent; the last enabled administrator is never demoted. Runs
-    /// under <see cref="_resolveLock"/>, so the admin count can't change between counting and demoting.
+    /// Sets <see cref="PermissionKind.IsAdministrator"/> to Admin Group membership in <paramref name="groups"/>, and
+    /// nothing else. Skipped when the setting is empty or the groups claim was absent; the last enabled administrator
+    /// is never demoted. Runs under <see cref="_resolveLock"/>, so the admin count can't change between counting and
+    /// demoting.
     /// </summary>
-    private async Task SyncAdminGroupAsync(User user, JsonWebToken idToken, PluginConfiguration configuration)
+    private async Task SyncAdminGroupAsync(User user, IReadOnlyCollection<string>? groups, PluginConfiguration configuration)
     {
         if (string.IsNullOrEmpty(configuration.AdminGroup))
         {
             return;
         }
 
-        if (!TryGetStrings(idToken, configuration.GroupsClaim, out var groups))
+        if (groups is null)
         {
             LogAdminGroupSkipped(user.Id, configuration.GroupsClaim);
             return;

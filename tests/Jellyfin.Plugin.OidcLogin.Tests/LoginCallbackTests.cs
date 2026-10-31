@@ -113,7 +113,7 @@ public sealed class LoginCallbackTests : IDisposable
         var result = await service.CallbackAsync(query, cookie, TestContext.Current.CancellationToken);
 
         Assert.Null(result.Failure);
-        Assert.Equal(existing.Id, codes.Consume(result.HandoffCode!, cookie));
+        Assert.Equal(existing.Id, codes.Consume(result.HandoffCode!, cookie)?.UserId);
         Assert.Single(_users.All);
         var link = Assert.Single(new LinkedIdentityStore(_dataFolder).GetAll());
         Assert.Equal(linkedAt, link.LinkedAt);
@@ -133,7 +133,7 @@ public sealed class LoginCallbackTests : IDisposable
 
         var second = await service.CallbackAsync(secondQuery, secondCookie, TestContext.Current.CancellationToken);
 
-        Assert.Equal(codes.Consume(first.HandoffCode!, firstCookie), codes.Consume(second.HandoffCode!, secondCookie));
+        Assert.Equal(codes.Consume(first.HandoffCode!, firstCookie)?.UserId, codes.Consume(second.HandoffCode!, secondCookie)?.UserId);
         Assert.Single(_users.All);
     }
 
@@ -299,7 +299,7 @@ public sealed class LoginCallbackTests : IDisposable
 
         Assert.Null(codes.Consume(otherCode, cookie));
         Assert.Null(codes.Consume(otherCode, otherCookie));
-        Assert.Equal(_users.All[0].Id, codes.Consume(code, cookie));
+        Assert.Equal(_users.All[0].Id, codes.Consume(code, cookie)?.UserId);
         Assert.Null(codes.Consume(code, cookie));
     }
 

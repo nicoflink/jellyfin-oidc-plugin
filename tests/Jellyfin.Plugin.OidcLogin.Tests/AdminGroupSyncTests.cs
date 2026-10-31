@@ -2,13 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
+using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Session;
+using MediaBrowser.Model.Dto;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
@@ -28,6 +31,8 @@ public sealed class AdminGroupSyncTests : IDisposable
     private readonly InMemoryUsers _users = new();
     private readonly RecordingLogger _logger = new();
     private readonly string _dataFolder = Directory.CreateTempSubdirectory("oidclogin-tests").FullName;
+    private readonly ISessionManager _sessions = Substitute.For<ISessionManager>();
+    private readonly OidcLoginService _service;
     private readonly PluginConfiguration _configuration = new()
     {
         PublicJellyfinUrl = "https://jellyfin.example.test",
@@ -36,6 +41,17 @@ public sealed class AdminGroupSyncTests : IDisposable
         ClientSecret = "client-secret",
         AdminGroup = "jellyfin-admins",
     };
+
+    public AdminGroupSyncTests()
+    {
+        _sessions.AuthenticateDirect(Arg.Any<AuthenticationRequest>()).Returns(call => Task.FromResult(new AuthenticationResult
+        {
+            AccessToken = "session-token",
+            ServerId = "server-id",
+            User = new UserDto { Id = call.Arg<AuthenticationRequest>().UserId },
+        }));
+        _service = CreateService();
+    }
 
     [Fact]
     public async Task AdminGroupMemberIsPromoted()
@@ -151,6 +167,44 @@ public sealed class AdminGroupSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task LoginAbandonedAfterTheCallbackChangesNothing()
+    {
+        _users.AddAdministrator("setup-admin");
+        var alice = LinkedUser("alice");
+
+        var callback = await CallbackAsync(groups: new[] { "jellyfin-admins" });
+
+        Assert.Null(callback.Failure);
+        Assert.False(_users.IsSavedAdministrator(alice));
+    }
+
+    [Fact]
+    public async Task DisabledUserIsRefusedWithoutBeingPromoted()
+    {
+        _users.AddAdministrator("setup-admin");
+        var alice = LinkedUser("alice");
+        alice.SetPermission(PermissionKind.IsDisabled, true);
+
+        var result = await LoginAsync(groups: new[] { "jellyfin-admins" });
+
+        Assert.Equal(FailureCategory.Disabled, result.Failure?.Category);
+        Assert.False(_users.IsSavedAdministrator(alice));
+    }
+
+    [Fact]
+    public async Task UserWhoCannotSignInRightNowIsRefusedWithoutBeingDemoted()
+    {
+        _users.AddAdministrator("setup-admin");
+        var alice = LinkedUser("alice", administrator: true);
+        alice.SetPermission(PermissionKind.EnableRemoteAccess, false);
+
+        var result = await LoginAsync(groups: new[] { "family" }, fromLocalNetwork: false);
+
+        Assert.True(result.Failure?.NotNow);
+        Assert.True(_users.IsSavedAdministrator(alice));
+    }
+
+    [Fact]
     public async Task NoOtherPolicyIsTouched()
     {
         _users.AddAdministrator("setup-admin");
@@ -172,6 +226,7 @@ public sealed class AdminGroupSyncTests : IDisposable
 
     public void Dispose()
     {
+        _service.Dispose();
         _identityProvider.Dispose();
         Directory.Delete(_dataFolder, recursive: true);
     }
@@ -185,12 +240,32 @@ public sealed class AdminGroupSyncTests : IDisposable
     }
 
     /// <summary>
+    /// Runs Start, Callback (see <see cref="CallbackAsync"/>) and Complete, by default from the local network.
+    /// </summary>
+    private async Task<CompleteResult> LoginAsync(object? groups, bool fromLocalNetwork = true)
+    {
+        var (callback, flowCookie) = await CallbackAsync(groups, _service);
+        Assert.Null(callback.Failure);
+        return await _service.CompleteAsync(
+            new CompleteRequest(
+                "https://jellyfin.example.test",
+                "application/json",
+                JsonSerializer.Serialize(new Dictionary<string, string> { ["code"] = callback.HandoffCode!, ["deviceId"] = "device-0123" }),
+                flowCookie,
+                null,
+                "203.0.113.7",
+                fromLocalNetwork),
+            TestContext.Current.CancellationToken);
+    }
+
+    private async Task<CallbackResult> CallbackAsync(object? groups) => (await CallbackAsync(groups, _service)).Result;
+
+    /// <summary>
     /// Runs Start, plays the Identity Provider with an ID token carrying <paramref name="groups"/> (no groups claim
     /// when null), and runs Callback.
     /// </summary>
-    private async Task<CallbackResult> LoginAsync(object? groups)
+    private async Task<(CallbackResult Result, string FlowCookie)> CallbackAsync(object? groups, OidcLoginService service)
     {
-        using var service = CreateService();
         var start = await service.StartAsync(TestContext.Current.CancellationToken);
         var authorize = QueryHelpers.ParseQuery(start.AuthorizationUrl!.Query);
         var now = _clock.GetUtcNow();
@@ -210,7 +285,8 @@ public sealed class AdminGroupSyncTests : IDisposable
         }
 
         _identityProvider.IdToken = _identityProvider.Sign(claims);
-        return await service.CallbackAsync(new CallbackQuery("authorization-code", authorize["state"]), start.FlowCookie!.Value, TestContext.Current.CancellationToken);
+        var result = await service.CallbackAsync(new CallbackQuery("authorization-code", authorize["state"]), start.FlowCookie!.Value, TestContext.Current.CancellationToken);
+        return (result, start.FlowCookie!.Value);
     }
 
     private OidcLoginService CreateService()
@@ -221,7 +297,7 @@ public sealed class AdminGroupSyncTests : IDisposable
             new IdentityProviderClient(httpClientFactory),
             new FlowCookieProtector(_dataProtection),
             _users.Manager,
-            Substitute.For<ISessionManager>(),
+            _sessions,
             new LinkedIdentityStore(_dataFolder),
             new HandoffCodes(_clock),
             _clock,
