@@ -20,8 +20,8 @@ namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 /// One real PocketID and one real Jellyfin (with the Plugin installed) shared by every test in the run.
 /// </summary>
 /// <remarks>
-/// Jellyfin joins PocketID's network namespace, so both reach the issuer at the same
-/// <c>http://localhost:P</c> the browser uses (WebAuthn needs that secure origin). PocketID owns the
+/// PocketID and Jellyfin share one network namespace, so both reach the issuer at the same
+/// <c>http://localhost:P</c> the browser uses (WebAuthn needs that secure origin). A placeholder container owns the
 /// namespace and publishes both ports. The browser reaches Jellyfin as <c>127.0.0.1</c> so the two
 /// apps' cookies stay apart.
 /// </remarks>
@@ -37,6 +37,7 @@ public sealed class E2EEnvironment : IAsyncLifetime
     private const string StaticApiKey = "e2e-static-api-key-0123456789";
     private const int JellyfinPort = 8096;
 
+    private IContainer? _network;
     private IContainer? _pocketId;
     private IContainer? _jellyfin;
     private IPlaywright? _playwright;
@@ -93,6 +94,15 @@ public sealed class E2EEnvironment : IAsyncLifetime
         return result.Stdout;
     }
 
+    /// <summary>
+    /// Reads Jellyfin's log so far.
+    /// </summary>
+    internal async Task<string> ReadJellyfinLogAsync()
+    {
+        var (stdout, stderr) = await _jellyfin!.GetLogsAsync(ct: TestContext.Current.CancellationToken);
+        return stdout + stderr;
+    }
+
     private async Task StartAndSeedAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -101,24 +111,33 @@ public sealed class E2EEnvironment : IAsyncLifetime
 
         var pocketIdPort = GetFreeTcpPort();
         PocketIdUrl = new Uri($"http://localhost:{pocketIdPort}/");
-        var pocketIdContainer = new ContainerBuilder(ContainerImages.PocketId)
+
+        // Owns the shared network namespace and publishes both ports, so PocketID can be stopped (scenario 6) while
+        // Jellyfin stays reachable. It reuses the PocketID image's busybox rather than pulling another image.
+        var networkContainer = new ContainerBuilder(ContainerImages.PocketId)
+            .WithEntrypoint("/bin/sh", "-c", "trap 'exit 0' TERM; sleep 2147483647 & wait")
+            .WithPortBinding(pocketIdPort, pocketIdPort)
+            .WithPortBinding(JellyfinPort, assignRandomHostPort: true)
+            .Build();
+        _network = networkContainer;
+        await networkContainer.StartAsync(cancellationToken);
+
+        _pocketId = new ContainerBuilder(ContainerImages.PocketId)
+            .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{networkContainer.Id}")
             .WithEnvironment("PORT", pocketIdPort.ToString(CultureInfo.InvariantCulture))
             .WithEnvironment("APP_URL", PocketIdUrl.ToString().TrimEnd('/'))
             .WithEnvironment("STATIC_API_KEY", StaticApiKey)
             .WithEnvironment("ENCRYPTION_KEY", "e2e-encryption-key-0123456789")
             .WithEnvironment("APP_ENV", "test")
-            .WithPortBinding(pocketIdPort, pocketIdPort)
-            .WithPortBinding(JellyfinPort, assignRandomHostPort: true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(
-                r => r.ForPort((ushort)pocketIdPort).ForPath("/healthz").ForStatusCode(HttpStatusCode.NoContent),
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted(
+                ["wget", "-q", "-O", "/dev/null", $"http://localhost:{pocketIdPort}/healthz"],
                 w => w.WithTimeout(TimeSpan.FromMinutes(1))))
             .Build();
-        _pocketId = pocketIdContainer;
-        await pocketIdContainer.StartAsync(cancellationToken);
+        await _pocketId.StartAsync(cancellationToken);
 
-        JellyfinUrl = new Uri($"http://127.0.0.1:{pocketIdContainer.GetMappedPublicPort(JellyfinPort)}/");
+        JellyfinUrl = new Uri($"http://127.0.0.1:{networkContainer.GetMappedPublicPort(JellyfinPort)}/");
         var jellyfinBuilder = new ContainerBuilder(ContainerImages.Jellyfin)
-            .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{pocketIdContainer.Id}");
+            .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{networkContainer.Id}");
         foreach (var artifact in BuildManifest.Artifacts)
         {
             jellyfinBuilder = jellyfinBuilder.WithResourceMapping(new FileInfo(Path.Combine(AppContext.BaseDirectory, artifact)), "/config/plugins/OidcLogin/");
@@ -198,6 +217,28 @@ public sealed class E2EEnvironment : IAsyncLifetime
         _jellyfin = null;
         await SaveLogsAndDisposeAsync(_pocketId, "pocketid");
         _pocketId = null;
+        if (_network is not null)
+        {
+            await _network.DisposeAsync();
+            _network = null;
+        }
+    }
+
+    /// <summary>
+    /// Stops PocketID, runs <paramref name="whileStopped"/>, and starts PocketID again with its data intact. Only
+    /// for tests in the <see cref="IdentityProviderOutage"/> collection, which runs alone.
+    /// </summary>
+    internal async Task WithPocketIdStoppedAsync(Func<Task> whileStopped)
+    {
+        await _pocketId!.StopAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            await whileStopped();
+        }
+        finally
+        {
+            await _pocketId.StartAsync(TestContext.Current.CancellationToken);
+        }
     }
 
     /// <summary>
