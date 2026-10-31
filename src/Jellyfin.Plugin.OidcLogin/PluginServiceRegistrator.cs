@@ -1,6 +1,7 @@
 using System;
 using Jellyfin.Plugin.OidcLogin.Login;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -19,9 +20,16 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.TryAddSingleton(TimeProvider.System);
         serviceCollection.AddSingleton<IdentityProviderClient>();
         serviceCollection.AddSingleton<FlowCookieProtector>();
+        serviceCollection.AddSingleton<HandoffCodes>();
+
+        // Resolved after the Plugin is loaded, so its data folder is known.
+        serviceCollection.AddSingleton(_ => new LinkedIdentityStore(Plugin.Instance!.DataFolderPath));
         serviceCollection.AddSingleton(services => new OidcLoginService(
             services.GetRequiredService<IdentityProviderClient>(),
             services.GetRequiredService<FlowCookieProtector>(),
+            services.GetRequiredService<IUserManager>(),
+            services.GetRequiredService<LinkedIdentityStore>(),
+            services.GetRequiredService<HandoffCodes>(),
             services.GetRequiredService<TimeProvider>(),
             () => Plugin.Instance!.Configuration,
             services.GetRequiredService<ILogger<OidcLoginService>>()));

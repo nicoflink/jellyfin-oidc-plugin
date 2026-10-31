@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Text;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -193,6 +194,9 @@ public sealed class LoginStartTests : IDisposable
         return new OidcLoginService(
             new IdentityProviderClient(httpClientFactory),
             new FlowCookieProtector(_dataProtection),
+            new InMemoryUsers().Manager,
+            new LinkedIdentityStore(Path.Combine(Path.GetTempPath(), "oidclogin-tests-unused")),
+            new HandoffCodes(_clock),
             _clock,
             () => _configuration,
             NullLogger<OidcLoginService>.Instance);
