@@ -43,12 +43,12 @@ public sealed class ConnectionTester
             return Failed("Enter the Issuer URL as an absolute https URL, such as https://id.example.com.");
         }
 
-        if (issuerUri.Scheme == Uri.UriSchemeHttp && !issuerUri.IsLoopback)
+        if (!IssuerUrl.IsAllowed(issuerUri))
         {
             return Failed("The Issuer URL must use https; plain http is only allowed for loopback hosts.");
         }
 
-        var discoveryUrl = new Uri(issuer.TrimEnd('/') + "/.well-known/openid-configuration");
+        var discoveryUrl = IssuerUrl.Discovery(issuerUri);
         OpenIdConnectConfiguration discovery;
         try
         {

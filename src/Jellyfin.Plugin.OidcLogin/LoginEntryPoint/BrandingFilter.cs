@@ -64,7 +64,7 @@ public sealed class BrandingFilter : IResultFilter
         }
 
         // The controller builds a fresh DTO per request, so changing it changes only this response.
-        var button = Button(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Start");
+        var button = Button(OidcLoginEndpoints.Url(configuration, "Start"));
         branding.LoginDisclaimer = string.IsNullOrEmpty(branding.LoginDisclaimer) ? button : branding.LoginDisclaimer + "\n\n" + button;
     }
 

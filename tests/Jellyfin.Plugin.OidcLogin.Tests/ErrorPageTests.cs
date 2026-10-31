@@ -41,7 +41,7 @@ public sealed class ErrorPageTests
     {
         var html = ErrorPage.Render(FailureCategory.Disabled, "7K3QX9TZ", notNow: true);
 
-        Assert.Contains("You can&#39;t sign in right now.", html, StringComparison.Ordinal);
+        Assert.Contains("You can&#39;t sign in right now. Please contact the server&#39;s administrator.", html, StringComparison.Ordinal);
         Assert.DoesNotContain("disabled", html, StringComparison.Ordinal);
         Assert.Contains("href=\"Start\">Try again</a>", html, StringComparison.Ordinal);
     }
@@ -53,9 +53,21 @@ public sealed class ErrorPageTests
     }
 
     [Fact]
-    public void PasskeyRequiredAsksForThePasskey()
+    public void PasskeyRequiredAsksForThePasskeyWhenPhrIsRequired()
     {
-        Assert.Contains("sign in with your passkey", ErrorPage.Message(FailureCategory.PasskeyRequired), StringComparison.Ordinal);
+        Assert.Contains("sign in with your passkey", ErrorPage.Message(FailureCategory.PasskeyRequired, requiredAmr: "phr"), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("hwk")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void PasskeyRequiredDoesNotMentionPasskeysForAnotherRequiredMethod(string? requiredAmr)
+    {
+        var message = ErrorPage.Message(FailureCategory.PasskeyRequired, requiredAmr: requiredAmr);
+
+        Assert.DoesNotContain("passkey", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sign-in method", message, StringComparison.Ordinal);
     }
 
     [Theory]

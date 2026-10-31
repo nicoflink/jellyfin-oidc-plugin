@@ -166,6 +166,9 @@ public sealed class E2EEnvironment : IAsyncLifetime
         var cancellationToken = timeout.Token;
         Directory.CreateDirectory(ArtifactsDirectory);
 
+        // Checked before any container starts.
+        var artifacts = BuildManifest.ArtifactFiles(AppContext.BaseDirectory);
+
         var pocketIdPort = GetFreeTcpPort();
         PocketIdUrl = new Uri($"http://localhost:{pocketIdPort}/");
 
@@ -195,9 +198,9 @@ public sealed class E2EEnvironment : IAsyncLifetime
         JellyfinUrl = new Uri($"http://127.0.0.1:{networkContainer.GetMappedPublicPort(JellyfinPort)}/");
         var jellyfinBuilder = new ContainerBuilder(ContainerImages.Jellyfin)
             .WithCreateParameterModifier(p => (p.HostConfig ??= new()).NetworkMode = $"container:{networkContainer.Id}");
-        foreach (var artifact in BuildManifest.Artifacts)
+        foreach (var artifact in artifacts)
         {
-            jellyfinBuilder = jellyfinBuilder.WithResourceMapping(new FileInfo(Path.Combine(AppContext.BaseDirectory, artifact)), "/config/plugins/OidcLogin/");
+            jellyfinBuilder = jellyfinBuilder.WithResourceMapping(artifact, "/config/plugins/OidcLogin/");
         }
 
         _jellyfin = jellyfinBuilder.Build();

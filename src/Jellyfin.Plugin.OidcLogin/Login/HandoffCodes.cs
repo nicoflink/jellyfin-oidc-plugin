@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -31,8 +32,9 @@ public sealed class HandoffCodes
     /// </summary>
     /// <param name="userId">The Jellyfin user the login resolved to.</param>
     /// <param name="flowCookie">The flow cookie value the browser holds.</param>
+    /// <param name="groups">The ID token's groups claim, or <c>null</c> when it had none.</param>
     /// <returns>The handoff code.</returns>
-    public string Mint(Guid userId, string flowCookie)
+    public string Mint(Guid userId, string flowCookie, IReadOnlyCollection<string>? groups = null)
     {
         var now = _clock.GetUtcNow();
         foreach (var (code, grant) in _grants)
@@ -44,7 +46,7 @@ public sealed class HandoffCodes
         }
 
         var handoffCode = Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
-        _grants[handoffCode] = new Grant(userId, Hash(flowCookie), now + Lifetime);
+        _grants[handoffCode] = new Grant(new Handoff(userId, groups), Hash(flowCookie), now + Lifetime);
         return handoffCode;
     }
 
@@ -53,8 +55,8 @@ public sealed class HandoffCodes
     /// </summary>
     /// <param name="handoffCode">The handoff code.</param>
     /// <param name="flowCookie">The flow cookie value presented with it.</param>
-    /// <returns>The user id, or <c>null</c> if the code is unknown, used, expired or presented with another cookie.</returns>
-    public Guid? Consume(string handoffCode, string flowCookie)
+    /// <returns>What Callback handed over, or <c>null</c> if the code is unknown, used, expired or presented with another cookie.</returns>
+    public Handoff? Consume(string handoffCode, string flowCookie)
     {
         if (!_grants.TryRemove(handoffCode, out var grant)
             || grant.ExpiresAt <= _clock.GetUtcNow()
@@ -63,10 +65,10 @@ public sealed class HandoffCodes
             return null;
         }
 
-        return grant.UserId;
+        return grant.Handoff;
     }
 
     private static byte[] Hash(string flowCookie) => SHA256.HashData(Encoding.UTF8.GetBytes(flowCookie));
 
-    private sealed record Grant(Guid UserId, byte[] FlowCookieHash, DateTimeOffset ExpiresAt);
+    private sealed record Grant(Handoff Handoff, byte[] FlowCookieHash, DateTimeOffset ExpiresAt);
 }

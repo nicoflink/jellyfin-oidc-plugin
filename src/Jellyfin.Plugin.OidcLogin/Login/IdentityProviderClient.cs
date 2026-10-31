@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.OidcLogin.Configuration;
 using MediaBrowser.Common.Net;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
@@ -292,7 +293,7 @@ public sealed class IdentityProviderClient
 
     private Discovery NewDiscovery(Uri issuer)
     {
-        var metadataAddress = issuer.ToString().TrimEnd('/') + "/.well-known/openid-configuration";
+        var metadataAddress = IssuerUrl.Discovery(issuer).ToString();
         var retriever = new FactoryDocumentRetriever(_httpClientFactory, requireHttps: !issuer.IsLoopback);
         return new Discovery(
             issuer,
