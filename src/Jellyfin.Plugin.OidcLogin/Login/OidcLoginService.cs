@@ -327,7 +327,8 @@ public sealed partial class OidcLoginService : IDisposable
 
         if (_userManager.GetUserById(userId) is not { } user)
         {
-            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin user {userId} was deleted during the login.")));
+            // Retrying resolves the Subject afresh: to a new user, or to whatever its settings now say.
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, $"Jellyfin user {userId} was deleted during the login.")));
         }
 
         if (Refusal(user, request.FromLocalNetwork) is { } refusal)
@@ -565,10 +566,11 @@ public sealed partial class OidcLoginService : IDisposable
             {
                 await _userManager.ChangePassword(user.Id, RandomToken()).ConfigureAwait(false);
             }
-            catch
+            catch (Exception e)
             {
+                // A user left with a blank password could be signed in to by anyone through Local Login.
                 await _userManager.DeleteUserAsync(user.Id).ConfigureAwait(false);
-                throw;
+                return (null, new LoginFailure(FailureCategory.Failed, $"Provisioning failed: the new Jellyfin user's password could not be set ({e.Message}), so the user was deleted again.") { Level = LogLevel.Error, Subject = subject, Username = username });
             }
 
             _linkedIdentities.Add(new LinkedIdentity(issuer, subject, user.Id, now, now));

@@ -295,7 +295,7 @@ public sealed class LoginCompleteTests : IDisposable
     }
 
     [Fact]
-    public async Task UserDeletedSinceTheCallbackFails()
+    public async Task UserDeletedSinceTheCallbackIsExpiredSoThePersonJustRetries()
     {
         var service = CreateService();
         var (code, cookie) = await SignInAsync(service);
@@ -303,7 +303,7 @@ public sealed class LoginCompleteTests : IDisposable
 
         var result = await service.CompleteAsync(Request(code, cookie), TestContext.Current.CancellationToken);
 
-        AssertRefused(result, FailureCategory.Failed);
+        AssertRefused(result, FailureCategory.Expired);
     }
 
     public void Dispose()

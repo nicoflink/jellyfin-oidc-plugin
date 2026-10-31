@@ -166,6 +166,23 @@ public sealed class WhoGetsInTests : IDisposable
     }
 
     [Fact]
+    public async Task ProvisioningThatCannotSetThePasswordFailsWithAReferenceAndLeavesNoUser()
+    {
+        _users.Manager.ChangePassword(Arg.Any<Guid>(), Arg.Any<string>()).Returns(Task.FromException(new InvalidOperationException("database is locked")));
+
+        var result = await LoginAsync();
+
+        Assert.Equal(FailureCategory.Failed, result.Failure?.Category);
+        Assert.Null(result.CompleteUrl);
+        Assert.Empty(_users.All);
+        Assert.Empty(new LinkedIdentityStore(_dataFolder).GetAll());
+        var entry = Assert.Single(_logger.Entries);
+        Assert.Equal(LogLevel.Error, entry.Level);
+        Assert.Equal(result.Failure!.Reference, entry.Values["Reference"]);
+        Assert.Contains("database is locked", entry.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task LinkedUserKeepsItsPassword()
     {
         var alice = LinkedUser("alice");

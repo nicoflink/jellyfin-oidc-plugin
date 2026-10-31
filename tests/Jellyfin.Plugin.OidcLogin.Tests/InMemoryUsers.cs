@@ -32,6 +32,11 @@ internal sealed class InMemoryUsers
             Save(call.Arg<User>());
             return Task.CompletedTask;
         });
+        Manager.DeleteUserAsync(Arg.Any<Guid>()).Returns(call =>
+        {
+            _users.RemoveAll(u => u.Id == call.Arg<Guid>());
+            return Task.CompletedTask;
+        });
         Manager.ChangePassword(Arg.Any<Guid>(), Arg.Any<string>()).Returns(call =>
         {
             _passwords[call.Arg<Guid>()] = call.Arg<string>();
