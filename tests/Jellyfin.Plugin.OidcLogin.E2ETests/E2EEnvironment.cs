@@ -40,6 +40,8 @@ public sealed class E2EEnvironment : IAsyncLifetime
     private IContainer? _pocketId;
     private IContainer? _jellyfin;
     private IPlaywright? _playwright;
+    private string _usersGroupId = null!;
+    private string _adminsGroupId = null!;
 
     internal static PocketIdUser Alice { get; } = new("6a3f1c2e-8b4d-4e5f-9a1b-2c3d4e5f6a7b", "alice");
 
@@ -93,6 +95,16 @@ public sealed class E2EEnvironment : IAsyncLifetime
         return result.Stdout;
     }
 
+    /// <summary>
+    /// Sets Alice's PocketID groups: always <see cref="JellyfinUsersGroup"/>, plus <see cref="JellyfinAdminsGroup"/>
+    /// when <paramref name="admin"/> is set.
+    /// </summary>
+    internal async Task SetAliceGroupsAsync(bool admin)
+    {
+        using var pocketId = new PocketIdAdmin(PocketIdUrl, StaticApiKey);
+        await pocketId.SetUserGroupsAsync(Alice.Id, admin ? [_usersGroupId, _adminsGroupId] : [_usersGroupId], TestContext.Current.CancellationToken);
+    }
+
     private async Task StartAndSeedAsync()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -141,6 +153,7 @@ public sealed class E2EEnvironment : IAsyncLifetime
                         PublicJellyfinUrl = JellyfinUrl.ToString(),
                         IssuerUrl = PocketIdUrl.ToString().TrimEnd('/'),
                         ClientId = OidcClientId,
+                        AdminGroup = JellyfinAdminsGroup,
                     },
                     ClientSecret = OidcClientSecret,
                 },
@@ -150,12 +163,12 @@ public sealed class E2EEnvironment : IAsyncLifetime
 
         using (var pocketId = new PocketIdAdmin(PocketIdUrl, StaticApiKey))
         {
-            var usersGroup = await pocketId.CreateGroupAsync(JellyfinUsersGroup, cancellationToken);
-            var adminsGroup = await pocketId.CreateGroupAsync(JellyfinAdminsGroup, cancellationToken);
+            _usersGroupId = await pocketId.CreateGroupAsync(JellyfinUsersGroup, cancellationToken);
+            _adminsGroupId = await pocketId.CreateGroupAsync(JellyfinAdminsGroup, cancellationToken);
             // The callback is registered without a port: PocketID matches loopback callbacks on any port (RFC 8252).
-            await pocketId.CreateOidcClientAsync(OidcClientId, OidcClientSecret, new Uri("http://127.0.0.1/OidcLogin/Callback"), [usersGroup, adminsGroup], cancellationToken);
+            await pocketId.CreateOidcClientAsync(OidcClientId, OidcClientSecret, new Uri("http://127.0.0.1/OidcLogin/Callback"), [_usersGroupId, _adminsGroupId], cancellationToken);
             await pocketId.CreateUserAsync(Alice, cancellationToken);
-            await pocketId.SetUserGroupsAsync(Alice.Id, [usersGroup], cancellationToken);
+            await pocketId.SetUserGroupsAsync(Alice.Id, [_usersGroupId], cancellationToken);
 
             InstallPlaywrightChromium();
             _playwright = await Playwright.CreateAsync();

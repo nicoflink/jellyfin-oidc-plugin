@@ -57,7 +57,8 @@ public class PluginConfiguration : BasePluginConfiguration
     public string RequiredGroup { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the Identity Provider group whose members are Jellyfin administrators; empty turns the sync off.
+    /// Gets or sets the Identity Provider group whose members are Jellyfin administrators; empty turns Admin Group
+    /// sync off.
     /// </summary>
     public string AdminGroup { get; set; } = string.Empty;
 
