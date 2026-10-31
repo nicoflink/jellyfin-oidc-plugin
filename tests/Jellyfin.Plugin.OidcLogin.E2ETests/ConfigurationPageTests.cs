@@ -73,8 +73,16 @@ public sealed class ConfigurationPageTests(E2EEnvironment environment)
         await configPage.GetByLabel("Client ID").FillAsync(E2EEnvironment.OidcClientId);
         await Assertions.Expect(showButton).ToBeEnabledAsync();
 
-        // Changing the Issuer URL warns, and declining the confirmation saves nothing.
+        // The page applies the server's Issuer URL rule: https, unless its host is loopback.
         var issuerUrl = configPage.GetByLabel("Issuer URL");
+        await issuerUrl.FillAsync("http://id.example.com");
+        await Assertions.Expect(showButton).ToBeDisabledAsync();
+        await Assertions.Expect(configPage.Locator("#oidcButtonMissing")).ToHaveTextAsync("Finish steps 1 and 2 first, missing: Issuer URL (https unless its host is loopback).");
+        await issuerUrl.FillAsync("http://127.0.0.1:1411");
+        await Assertions.Expect(showButton).ToBeEnabledAsync();
+        await issuerUrl.FillAsync(issuer);
+
+        // Changing the Issuer URL warns, and declining the confirmation saves nothing.
         await issuerUrl.FillAsync("https://other-id.example.com");
         await Assertions.Expect(configPage.Locator("#oidcIssuerWarning")).ToContainTextAsync("orphans all");
         string? confirmation = null;

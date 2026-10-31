@@ -189,6 +189,16 @@
         }
       }
 
+      // The server's rule (OidcLoginService.IsConfigured): https, or http on a loopback host.
+      function isIssuerUrl(text) {
+        if (!isHttpUrl(text)) return false;
+        var url = new URL(text);
+        return url.protocol === 'https:'
+          || url.hostname === 'localhost'
+          || url.hostname === '[::1]'
+          || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+      }
+
       function callbackUrl() {
         var publicUrl = value('oidcPublicJellyfinUrl');
         return isHttpUrl(publicUrl) ? publicUrl.replace(/\/+$/, '') + '/OidcLogin/Callback' : '';
@@ -197,7 +207,9 @@
       function missing() {
         var names = [];
         if (!isHttpUrl(value('oidcPublicJellyfinUrl'))) names.push('Public Jellyfin URL');
-        if (!isHttpUrl(value('oidcIssuerUrl'))) names.push('Issuer URL');
+        var issuerUrl = value('oidcIssuerUrl');
+        if (!isHttpUrl(issuerUrl)) names.push('Issuer URL');
+        else if (!isIssuerUrl(issuerUrl)) names.push('Issuer URL (https unless its host is loopback)');
         if (!value('oidcClientId')) names.push('Client ID');
         if (!clientSecretSet && !field('oidcClientSecret').value) names.push('Client secret');
         return names;
@@ -219,7 +231,7 @@
         var gaps = missing();
         var stepDone = {
           1: gaps.indexOf('Public Jellyfin URL') < 0,
-          2: gaps.indexOf('Issuer URL') < 0 && gaps.indexOf('Client ID') < 0 && gaps.indexOf('Client secret') < 0,
+          2: gaps.every(function (gap) { return gap === 'Public Jellyfin URL'; }),
           3: true,
           4: gaps.length === 0 && field('oidcShowSignInButton').checked
         };
