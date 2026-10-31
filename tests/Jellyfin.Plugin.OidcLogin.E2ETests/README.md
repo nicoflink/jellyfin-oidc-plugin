@@ -8,7 +8,7 @@ These tests run a real PocketID and a real Jellyfin (with the Plugin installed) 
 - **Shared network namespace.** Jellyfin joins PocketID's network namespace. WebAuthn needs a secure origin, so PocketID's `APP_URL` is `http://localhost:P`, and inside the namespace Jellyfin reaches the issuer at that same URL. PocketID publishes `P:P` and Jellyfin's 8096 on a random port.
 - **Two hostnames.** The browser uses `localhost` for PocketID and `127.0.0.1` for Jellyfin, so the two apps' cookies stay apart.
 - **Fresh passkey contexts.** `NewSessionAsync(withAlicePasskey: true)` opens a fresh browser context that holds only Alice's captured passkey and has no PocketID session. Signing in from it is a real passkey assertion.
-- **Pinned images.** Both image references live in `ContainerImages.cs`, digest-pinned, with `// renovate:` comments that Renovate's regex manager will match once it is configured (#34).
+- **Pinned images.** Both image references live in `ContainerImages.cs`, digest-pinned, with `// renovate:` comments that the regex manager in `renovate.json` matches. Keep each comment on the line above its constant, and keep the `name:tag@sha256:digest` form.
 
 ## Artifacts
 
