@@ -126,7 +126,7 @@ public sealed class ConfigurationPageTests(E2EEnvironment environment)
 
         await userName.FillAsync(E2EEnvironment.JellyfinAdminName);
         await page.GetByLabel("Password").FillAsync(E2EEnvironment.JellyfinAdminPassword);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In" }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In", Exact = true }).ClickAsync();
         await page.WaitForURLAsync(url => url.Contains("#/home", StringComparison.Ordinal));
     }
 
