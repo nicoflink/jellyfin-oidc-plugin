@@ -51,6 +51,9 @@ internal sealed class InMemoryUsers
         }
 
         var user = new User(username, "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider", "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider");
+
+        // As Jellyfin's CreateUserAsync does: enabled, with remote access.
+        user.AddDefaultPermissions();
         _users.Add(user);
         Save(user);
         return user;

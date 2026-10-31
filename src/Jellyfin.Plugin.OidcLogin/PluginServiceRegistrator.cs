@@ -1,8 +1,10 @@
 using System;
+using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
 using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Session;
@@ -45,6 +47,9 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             () => Plugin.Instance!.Configuration,
             new JellyfinWebClient(applicationHost.ApplicationVersionString),
             services.GetRequiredService<ILogger<OidcLoginService>>()));
+
+        // Jellyfin resolves event consumers from a scope per event; the store they get is the singleton.
+        serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedConsumer>();
 
         // Runs for every MVC result; it acts only on the anonymous GET /Branding/Configuration.
         serviceCollection.Configure<MvcOptions>(options => options.Filters.Add(new BrandingFilter(() => Plugin.Instance!.Configuration)));

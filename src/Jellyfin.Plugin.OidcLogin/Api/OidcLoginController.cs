@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.OidcLogin.Login;
+using MediaBrowser.Common.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -28,14 +29,17 @@ public class OidcLoginController : ControllerBase
     private const int MaxCompleteBodyLength = 4096;
 
     private readonly OidcLoginService _loginService;
+    private readonly INetworkManager _networkManager;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcLoginController"/> class.
     /// </summary>
     /// <param name="loginService">The OIDC Login service.</param>
-    public OidcLoginController(OidcLoginService loginService)
+    /// <param name="networkManager">Jellyfin's network manager, which knows its local networks.</param>
+    public OidcLoginController(OidcLoginService loginService, INetworkManager networkManager)
     {
         _loginService = loginService;
+        _networkManager = networkManager;
     }
 
     /// <summary>
@@ -115,10 +119,11 @@ public class OidcLoginController : ControllerBase
     /// </summary>
     /// <param name="category">The failure category; anything else is shown as Failed.</param>
     /// <param name="reference">The failure's reference code.</param>
+    /// <param name="notNow">Whether a Disabled refusal is only for now (see <see cref="LoginFailure.NotNow"/>).</param>
     /// <returns>The error page.</returns>
     [HttpGet("Error")]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public ActionResult Error([FromQuery] string? category, [FromQuery(Name = "ref")] string? reference)
+    public ActionResult Error([FromQuery] string? category, [FromQuery(Name = "ref")] string? reference, [FromQuery] bool notNow = false)
     {
         var failureCategory = Enum.TryParse<FailureCategory>(category, out var parsed) && Enum.IsDefined(parsed) && !int.TryParse(category, out _)
             ? parsed
@@ -127,7 +132,7 @@ public class OidcLoginController : ControllerBase
         {
             StatusCode = new LoginFailure(failureCategory, string.Empty).StatusCode,
             ContentType = MediaTypeNames.Text.Html + "; charset=utf-8",
-            Content = ErrorPage.Render(failureCategory, reference),
+            Content = ErrorPage.Render(failureCategory, reference, notNow),
         };
     }
 
@@ -135,7 +140,7 @@ public class OidcLoginController : ControllerBase
     /// Exchanges a handoff code, presented with its flow cookie, for a Jellyfin session.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The session (<c>accessToken</c>, <c>userId</c>, <c>serverId</c>), or the failure <c>category</c> and <c>ref</c>.</returns>
+    /// <returns>The session (<c>accessToken</c>, <c>userId</c>, <c>serverId</c>), or the failure <c>category</c> and <c>ref</c>, plus <c>notNow</c> when set.</returns>
     [HttpPost("Complete")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult> Complete(CancellationToken cancellationToken)
@@ -148,6 +153,7 @@ public class OidcLoginController : ControllerBase
             body = length > MaxCompleteBodyLength ? string.Empty : new string(buffer, 0, length);
         }
 
+        var remoteAddress = HttpContext.Connection.RemoteIpAddress;
         var result = await _loginService.CompleteAsync(
             new CompleteRequest(
                 Request.Headers.Origin,
@@ -155,12 +161,19 @@ public class OidcLoginController : ControllerBase
                 body,
                 FlowCookieValue(),
                 Request.Headers.UserAgent,
-                HttpContext.Connection.RemoteIpAddress?.ToString()),
+                remoteAddress?.ToString(),
+                remoteAddress is not null && _networkManager.IsInLocalNetwork(remoteAddress)),
             cancellationToken).ConfigureAwait(false);
 
         if (result.Failure is { } failure)
         {
-            return Json(failure.StatusCode, new Dictionary<string, string> { ["category"] = failure.Category.ToString(), ["ref"] = failure.Reference });
+            var refusal = new Dictionary<string, object> { ["category"] = failure.Category.ToString(), ["ref"] = failure.Reference };
+            if (failure.NotNow)
+            {
+                refusal["notNow"] = true;
+            }
+
+            return Json(failure.StatusCode, refusal);
         }
 
         var cookie = result.ClearedFlowCookie!;
@@ -191,7 +204,7 @@ public class OidcLoginController : ControllerBase
     /// Jellyfin URL. The cause is only in the reference code's log entry.
     /// </summary>
     private RedirectResult RedirectToError(LoginFailure failure)
-        => Redirect("Error?category=" + failure.Category + "&ref=" + Uri.EscapeDataString(failure.Reference));
+        => Redirect("Error?category=" + failure.Category + "&ref=" + Uri.EscapeDataString(failure.Reference) + (failure.NotNow ? "&notNow=true" : string.Empty));
 
     private string? FlowCookieValue()
         => Request.Cookies[FlowCookieProtector.SecureCookieName] ?? Request.Cookies[FlowCookieProtector.InsecureCookieName];

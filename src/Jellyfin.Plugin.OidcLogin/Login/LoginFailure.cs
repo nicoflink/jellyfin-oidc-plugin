@@ -33,6 +33,12 @@ public sealed record LoginFailure(FailureCategory Category, string Cause)
     public string? Username { get; init; }
 
     /// <summary>
+    /// Gets a value indicating whether a Disabled refusal is only for now (remote access or the parental schedule),
+    /// shown as "can't sign in right now" rather than as a disabled account.
+    /// </summary>
+    public bool NotNow { get; init; }
+
+    /// <summary>
     /// Gets the reference code shown to the person and tagged on the failure's one log entry.
     /// </summary>
     public string Reference { get; init; } = string.Empty;

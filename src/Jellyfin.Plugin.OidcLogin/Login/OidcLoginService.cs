@@ -276,7 +276,8 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Completes an OIDC Login: checks the request came from the Complete page, consumes the handoff code with the
-    /// flow cookie it was minted for, and creates a Jellyfin session as jellyfin-web would.
+    /// flow cookie it was minted for, refuses a user Jellyfin wouldn't let sign in, creates a Jellyfin session as
+    /// jellyfin-web would, and records the login on the user's link.
     /// </summary>
     /// <param name="request">The Complete page's POST.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
@@ -322,6 +323,11 @@ public sealed partial class OidcLoginService : IDisposable
             return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin user {userId} was deleted during the login.")));
         }
 
+        if (Refusal(user, request.FromLocalNetwork) is { } refusal)
+        {
+            return CompleteResult.Fail(Log(refusal));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         AuthenticationResult session;
         try
@@ -342,9 +348,34 @@ public sealed partial class OidcLoginService : IDisposable
             return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin refused a session for user {user.Id}: {e.Message}")));
         }
 
+        _linkedIdentities.RecordLogin(user.Id, _clock.GetUtcNow());
         var clearedFlowCookie = FlowCookie(publicUrl, string.Empty);
         clearedFlowCookie.Options.Expires = DateTimeOffset.UnixEpoch;
         return CompleteResult.SignedIn(new JellyfinSession(session.AccessToken, user.Id, session.ServerId), clearedFlowCookie);
+    }
+
+    /// <summary>
+    /// The checks Jellyfin's password login makes and <see cref="ISessionManager.AuthenticateDirect"/> skips: the user
+    /// is enabled, may connect remotely if it isn't local, and is within its parental access schedule.
+    /// </summary>
+    private static LoginFailure? Refusal(User user, bool fromLocalNetwork)
+    {
+        if (user.HasPermission(PermissionKind.IsDisabled))
+        {
+            return new LoginFailure(FailureCategory.Disabled, $"Jellyfin user {user.Id} is disabled.");
+        }
+
+        if (!fromLocalNetwork && !user.HasPermission(PermissionKind.EnableRemoteAccess))
+        {
+            return new LoginFailure(FailureCategory.Disabled, $"Jellyfin user {user.Id} may not connect remotely.") { NotNow = true };
+        }
+
+        if (!user.IsParentalScheduleAllowed())
+        {
+            return new LoginFailure(FailureCategory.Disabled, $"Jellyfin user {user.Id} is outside its parental access schedule.") { NotNow = true };
+        }
+
+        return null;
     }
 
     /// <inheritdoc />
@@ -462,7 +493,7 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Resolves the ID token's Subject to a Jellyfin user through its Linked Identity, provisioning a user and a link
-    /// when the Subject has none, then syncs the user's Admin Group membership.
+    /// when the Subject has none (or its user is gone), then syncs the user's Admin Group membership.
     /// </summary>
     private async Task<(User? User, LoginFailure? Failure)> ResolveUserAsync(JsonWebToken idToken, PluginConfiguration configuration)
     {
@@ -479,14 +510,14 @@ public sealed partial class OidcLoginService : IDisposable
             var now = _clock.GetUtcNow();
             if (_linkedIdentities.Find(issuer, subject) is { } link)
             {
-                if (_userManager.GetUserById(link.UserId) is not { } linkedUser)
+                if (_userManager.GetUserById(link.UserId) is { } linkedUser)
                 {
-                    return (null, new LoginFailure(FailureCategory.Failed, $"The Subject is linked to Jellyfin user {link.UserId}, which no longer exists.") { Subject = subject, Username = UsernameClaim(idToken, configuration) });
+                    await SyncAdminGroupAsync(linkedUser, idToken, configuration).ConfigureAwait(false);
+                    return (linkedUser, null);
                 }
 
-                _linkedIdentities.RecordLogin(issuer, subject, now);
-                await SyncAdminGroupAsync(linkedUser, idToken, configuration).ConfigureAwait(false);
-                return (linkedUser, null);
+                // The user was deleted without the Plugin seeing the event: the link goes, as it would have then.
+                _linkedIdentities.RemoveUser(link.UserId);
             }
 
             if (!configuration.JustInTimeProvisioning)

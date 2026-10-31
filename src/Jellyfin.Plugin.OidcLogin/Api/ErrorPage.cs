@@ -19,13 +19,15 @@ public static partial class ErrorPage
     /// Gets the message shown for <paramref name="category"/>.
     /// </summary>
     /// <param name="category">The failure category.</param>
+    /// <param name="notNow">Whether a Disabled refusal is only for now (see <see cref="LoginFailure.NotNow"/>).</param>
     /// <returns>The message.</returns>
-    public static string Message(FailureCategory category) => category switch
+    public static string Message(FailureCategory category, bool notNow = false) => category switch
     {
+        FailureCategory.Disabled when notNow => "You can't sign in right now.",
         FailureCategory.Cancelled => "Sign-in was cancelled.",
         FailureCategory.Expired => "Your sign-in has expired. Please try again.",
         FailureCategory.NotSetUp => "Your account isn't set up for this Jellyfin server. Please ask its administrator.",
-        FailureCategory.Disabled => "Your Jellyfin account is disabled.",
+        FailureCategory.Disabled => "Your Jellyfin account is disabled. Please contact the server's administrator.",
         FailureCategory.PasskeyRequired => "This server only accepts passkeys. Please sign in with your passkey.",
         FailureCategory.Unavailable => "The sign-in service is unavailable right now. Please try again later.",
         _ => "Sign-in failed.",
@@ -36,8 +38,9 @@ public static partial class ErrorPage
     /// </summary>
     /// <param name="category">The failure category.</param>
     /// <param name="reference">The reference code; left out unless it has the reference code format.</param>
+    /// <param name="notNow">Whether a Disabled refusal is only for now (see <see cref="LoginFailure.NotNow"/>).</param>
     /// <returns>The page's HTML.</returns>
-    public static string Render(FailureCategory category, string? reference)
+    public static string Render(FailureCategory category, string? reference, bool notNow = false)
     {
         // Links are relative to /OidcLogin/, so they hold under any base path.
         var actions = new StringBuilder();
@@ -53,7 +56,7 @@ public static partial class ErrorPage
             : string.Empty;
 
         return Template
-            .Replace("{{message}}", WebUtility.HtmlEncode(Message(category)), StringComparison.Ordinal)
+            .Replace("{{message}}", WebUtility.HtmlEncode(Message(category, notNow)), StringComparison.Ordinal)
             .Replace("{{reference}}", referenceLine, StringComparison.Ordinal)
             .Replace("{{actions}}", actions.ToString(), StringComparison.Ordinal);
     }
