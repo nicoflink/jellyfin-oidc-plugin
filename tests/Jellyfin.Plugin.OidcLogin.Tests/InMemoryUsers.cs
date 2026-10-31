@@ -38,4 +38,6 @@ internal sealed class InMemoryUsers
         _users.Add(user);
         return user;
     }
+
+    public void Remove(User user) => _users.Remove(user);
 }

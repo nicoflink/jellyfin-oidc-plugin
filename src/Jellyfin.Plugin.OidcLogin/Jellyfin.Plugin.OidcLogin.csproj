@@ -11,4 +11,8 @@
     <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Web\**" />
+  </ItemGroup>
+
 </Project>

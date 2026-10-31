@@ -3,13 +3,19 @@ using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using MediaBrowser.Controller.Authentication;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Session;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
@@ -19,7 +25,7 @@ using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 namespace Jellyfin.Plugin.OidcLogin.Login;
 
 /// <summary>
-/// Runs the OIDC Login flow: Start and Callback; Complete joins it as it is built.
+/// Runs the OIDC Login flow: Start, Callback and Complete.
 /// </summary>
 public sealed partial class OidcLoginService : IDisposable
 {
@@ -30,10 +36,12 @@ public sealed partial class OidcLoginService : IDisposable
     private readonly IdentityProviderClient _identityProvider;
     private readonly FlowCookieProtector _flowCookie;
     private readonly IUserManager _userManager;
+    private readonly ISessionManager _sessionManager;
     private readonly LinkedIdentityStore _linkedIdentities;
     private readonly HandoffCodes _handoffCodes;
     private readonly TimeProvider _clock;
     private readonly Func<PluginConfiguration> _configuration;
+    private readonly JellyfinWebClient _webClient;
     private readonly ILogger<OidcLoginService> _logger;
 
     /// <summary>
@@ -47,28 +55,34 @@ public sealed partial class OidcLoginService : IDisposable
     /// <param name="identityProvider">The Identity Provider client.</param>
     /// <param name="flowCookie">Protects the flow cookie.</param>
     /// <param name="userManager">Jellyfin's user manager.</param>
+    /// <param name="sessionManager">Jellyfin's session manager.</param>
     /// <param name="linkedIdentities">The Linked Identity store.</param>
     /// <param name="handoffCodes">The handoff codes Callback mints for Complete.</param>
     /// <param name="clock">The clock.</param>
     /// <param name="configuration">Reads the current Plugin configuration.</param>
+    /// <param name="webClient">What jellyfin-web reports when it signs in.</param>
     /// <param name="logger">The logger.</param>
     public OidcLoginService(
         IdentityProviderClient identityProvider,
         FlowCookieProtector flowCookie,
         IUserManager userManager,
+        ISessionManager sessionManager,
         LinkedIdentityStore linkedIdentities,
         HandoffCodes handoffCodes,
         TimeProvider clock,
         Func<PluginConfiguration> configuration,
+        JellyfinWebClient webClient,
         ILogger<OidcLoginService> logger)
     {
         _identityProvider = identityProvider;
         _flowCookie = flowCookie;
         _userManager = userManager;
+        _sessionManager = sessionManager;
         _linkedIdentities = linkedIdentities;
         _handoffCodes = handoffCodes;
         _clock = clock;
         _configuration = configuration;
+        _webClient = webClient;
         _logger = logger;
     }
 
@@ -113,12 +127,7 @@ public sealed partial class OidcLoginService : IDisposable
             ["code_challenge_method"] = "S256",
         });
 
-        var secure = publicUrl.Scheme == Uri.UriSchemeHttps;
-        var cookie = new IssuedCookie(
-            secure ? FlowCookieProtector.SecureCookieName : FlowCookieProtector.InsecureCookieName,
-            _flowCookie.Protect(flow),
-            new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
-        return StartResult.Redirect(new Uri(authorizationUrl), cookie);
+        return StartResult.Redirect(new Uri(authorizationUrl), FlowCookie(publicUrl, _flowCookie.Protect(flow)));
     }
 
     /// <summary>
@@ -198,6 +207,79 @@ public sealed partial class OidcLoginService : IDisposable
         return CallbackResult.Handoff(new Uri(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Complete#code=" + handoffCode));
     }
 
+    /// <summary>
+    /// Completes an OIDC Login: checks the request came from the Complete page, consumes the handoff code with the
+    /// flow cookie it was minted for, and creates a Jellyfin session as jellyfin-web would.
+    /// </summary>
+    /// <param name="request">The Complete page's POST.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The Jellyfin session and the cleared flow cookie, or a failure.</returns>
+    public async Task<CompleteResult> CompleteAsync(CompleteRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var configuration = _configuration();
+        if (!TryGetSettings(configuration, out var publicUrl, out _))
+        {
+            return CompleteResult.Fail(Log(NotConfigured));
+        }
+
+        // Checked before the code is touched, so a forged cross-site request can't use up someone's code.
+        if (!IsOrigin(request.Origin, publicUrl))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request didn't come from the Public Jellyfin URL's origin.")));
+        }
+
+        if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
+            || !string.Equals(contentType.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request isn't JSON.")));
+        }
+
+        if (!TryReadCompleteBody(request.Body, out var handoffCode, out var deviceId))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request has no code or deviceId.")));
+        }
+
+        if (!DeviceIdFormat().IsMatch(deviceId))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request's device id is malformed.")));
+        }
+
+        if (request.FlowCookie is null || _handoffCodes.Consume(handoffCode, request.FlowCookie) is not { } userId)
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The handoff code is unknown, used, expired or presented without its flow cookie.")));
+        }
+
+        if (_userManager.GetUserById(userId) is not { } user)
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin user {userId} was deleted during the login.")));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        AuthenticationResult session;
+        try
+        {
+            session = await _sessionManager.AuthenticateDirect(new AuthenticationRequest
+            {
+                UserId = user.Id,
+                Username = user.Username,
+                App = JellyfinWebClient.App,
+                AppVersion = _webClient.AppVersion,
+                DeviceId = deviceId,
+                DeviceName = JellyfinWebClient.DeviceName(request.UserAgent),
+                RemoteEndPoint = request.RemoteEndPoint,
+            }).ConfigureAwait(false);
+        }
+        catch (SecurityException e)
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin refused a session for user {user.Id}: {e.Message}")));
+        }
+
+        var clearedFlowCookie = FlowCookie(publicUrl, string.Empty);
+        clearedFlowCookie.Options.Expires = DateTimeOffset.UnixEpoch;
+        return CompleteResult.SignedIn(new JellyfinSession(session.AccessToken, user.Id, session.ServerId), clearedFlowCookie);
+    }
+
     /// <inheritdoc />
     public void Dispose() => _resolveLock.Dispose();
 
@@ -215,6 +297,53 @@ public sealed partial class OidcLoginService : IDisposable
 
     private static bool TryGetHttpUrl(string value, [NotNullWhen(true)] out Uri? url)
         => Uri.TryCreate(value, UriKind.Absolute, out url) && (url.Scheme == Uri.UriSchemeHttps || url.Scheme == Uri.UriSchemeHttp);
+
+    /// <summary>
+    /// The flow cookie: <c>__Host-</c> and <c>Secure</c> when the Public Jellyfin URL is https, never derived from
+    /// the request.
+    /// </summary>
+    private static IssuedCookie FlowCookie(Uri publicUrl, string value)
+    {
+        var secure = publicUrl.Scheme == Uri.UriSchemeHttps;
+        return new IssuedCookie(
+            secure ? FlowCookieProtector.SecureCookieName : FlowCookieProtector.InsecureCookieName,
+            value,
+            new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
+    }
+
+    private static bool IsOrigin(string? origin, Uri publicUrl)
+        => Uri.TryCreate(origin, UriKind.Absolute, out var originUrl)
+            && string.Equals(originUrl.GetLeftPart(UriPartial.Authority), publicUrl.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryReadCompleteBody(string? body, [NotNullWhen(true)] out string? handoffCode, [NotNullWhen(true)] out string? deviceId)
+    {
+        handoffCode = null;
+        deviceId = null;
+        try
+        {
+            using var json = JsonDocument.Parse(body ?? string.Empty);
+            if (json.RootElement.ValueKind == JsonValueKind.Object
+                && json.RootElement.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String
+                && json.RootElement.TryGetProperty("deviceId", out var device) && device.ValueKind == JsonValueKind.String)
+            {
+                handoffCode = code.GetString()!;
+                deviceId = device.GetString()!;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The device ids jellyfin-web generates (base64 with <c>=</c> turned into <c>1</c>, or a timestamp), plus
+    /// base64url. Nothing that could break Jellyfin's <c>Authorization</c> header or the Devices page.
+    /// </summary>
+    [GeneratedRegex("^[A-Za-z0-9+/=_-]{1,512}$")]
+    private static partial Regex DeviceIdFormat();
 
     private static string CallbackUrl(PluginConfiguration configuration) => configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Callback";
 

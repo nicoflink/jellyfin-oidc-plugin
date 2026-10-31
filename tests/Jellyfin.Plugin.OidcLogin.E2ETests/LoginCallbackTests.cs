@@ -19,11 +19,16 @@ public sealed class LoginCallbackTests(E2EEnvironment environment)
         var page = session.Page;
 
         await page.GotoAsync(new Uri(environment.JellyfinUrl, "OidcLogin/Start").ToString());
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
+        var callback = new Uri(environment.JellyfinUrl, "OidcLogin/Callback").ToString();
+        var callbackResponse = await page.RunAndWaitForResponseAsync(
+            () => page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync(),
+            response => response.Url.StartsWith(callback, StringComparison.Ordinal));
 
-        var complete = new Uri(environment.JellyfinUrl, "OidcLogin/Complete").ToString();
-        await page.WaitForURLAsync(url => url.StartsWith(complete + "#code=", StringComparison.Ordinal));
-        Assert.True(new Uri(page.Url).Fragment.Length > "#code=".Length);
+        // The Complete page drops the fragment straight away, so the redirect is where the code is visible.
+        Assert.Equal(302, callbackResponse.Status);
+        var location = new Uri(callbackResponse.Headers["location"]);
+        Assert.Equal(new Uri(environment.JellyfinUrl, "OidcLogin/Complete"), new Uri(location.GetLeftPart(UriPartial.Path)));
+        Assert.True(location.Fragment.StartsWith("#code=", StringComparison.Ordinal) && location.Fragment.Length > "#code=".Length);
 
         using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
         var token = await jellyfin.AuthenticateAsync(E2EEnvironment.JellyfinAdminName, E2EEnvironment.JellyfinAdminPassword, TestContext.Current.CancellationToken);
