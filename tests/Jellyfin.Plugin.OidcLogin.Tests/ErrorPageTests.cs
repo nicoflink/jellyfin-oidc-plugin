@@ -28,6 +28,24 @@ public sealed class ErrorPageTests
         Assert.Contains("Back to login", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DisabledAsksToContactTheAdministrator()
+    {
+        var html = ErrorPage.Render(FailureCategory.Disabled, "7K3QX9TZ");
+
+        Assert.Contains("Your Jellyfin account is disabled. Please contact the server&#39;s administrator.", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DisabledOnlyForNowSaysYouCantSignInRightNow()
+    {
+        var html = ErrorPage.Render(FailureCategory.Disabled, "7K3QX9TZ", notNow: true);
+
+        Assert.Contains("You can&#39;t sign in right now.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("disabled", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"Start\">Try again</a>", html, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("<script>alert(1)</script>")]
     [InlineData("7k3qx9tz")]

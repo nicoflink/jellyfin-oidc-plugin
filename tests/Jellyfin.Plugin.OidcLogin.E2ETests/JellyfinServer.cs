@@ -87,6 +87,13 @@ internal sealed class JellyfinServer : IDisposable
         await SendAsync(request, cancellationToken);
     }
 
+    public async Task DeleteAsAdminAsync(string path, string accessToken, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Delete, new Uri(path, UriKind.Relative));
+        request.Headers.TryAddWithoutValidation("Authorization", $"MediaBrowser Token=\"{accessToken}\"");
+        await SendAsync(request, cancellationToken);
+    }
+
     public void Dispose() => _http.Dispose();
 
     private async Task<JsonElement> PostAsync(string path, object? body, CancellationToken cancellationToken)

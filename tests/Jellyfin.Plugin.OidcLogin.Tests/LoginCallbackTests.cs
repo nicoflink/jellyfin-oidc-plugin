@@ -101,7 +101,7 @@ public sealed class LoginCallbackTests : IDisposable
     }
 
     [Fact]
-    public async Task LinkedSubjectResolvesToItsUserAndRecordsTheLogin()
+    public async Task LinkedSubjectResolvesToItsUser()
     {
         var existing = _users.Add("renamed-in-jellyfin");
         var linkedAt = _clock.GetUtcNow() - TimeSpan.FromDays(3);
@@ -117,7 +117,9 @@ public sealed class LoginCallbackTests : IDisposable
         Assert.Single(_users.All);
         var link = Assert.Single(new LinkedIdentityStore(_dataFolder).GetAll());
         Assert.Equal(linkedAt, link.LinkedAt);
-        Assert.Equal(_clock.GetUtcNow(), link.LastLoginAt);
+
+        // The login only counts once Complete signs in.
+        Assert.Equal(linkedAt, link.LastLoginAt);
     }
 
     [Fact]

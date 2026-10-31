@@ -75,16 +75,31 @@ public sealed class LinkedIdentityStore
     }
 
     /// <summary>
-    /// Records a sign-in of a linked Subject.
+    /// Records a sign-in of a linked Jellyfin user.
     /// </summary>
-    /// <param name="issuer">The issuer.</param>
-    /// <param name="subject">The <c>sub</c> claim.</param>
-    /// <param name="at">When the Subject signed in.</param>
-    public void RecordLogin(string issuer, string subject, DateTimeOffset at)
+    /// <param name="userId">The Jellyfin user's id.</param>
+    /// <param name="at">When the user signed in.</param>
+    public void RecordLogin(Guid userId, DateTimeOffset at)
     {
         lock (_lock)
         {
-            Save(Load().Select(l => IsSubject(l, issuer, subject) ? l with { LastLoginAt = at } : l).ToList());
+            Save(Load().Select(l => l.UserId == userId ? l with { LastLoginAt = at } : l).ToList());
+        }
+    }
+
+    /// <summary>
+    /// Removes a Jellyfin user's link, if it has one.
+    /// </summary>
+    /// <param name="userId">The Jellyfin user's id.</param>
+    public void RemoveUser(Guid userId)
+    {
+        lock (_lock)
+        {
+            var links = Load();
+            if (links.Any(l => l.UserId == userId))
+            {
+                Save(links.Where(l => l.UserId != userId).ToList());
+            }
         }
     }
 
