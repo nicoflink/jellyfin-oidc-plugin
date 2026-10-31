@@ -13,6 +13,11 @@ namespace Jellyfin.Plugin.OidcLogin.Api;
 /// </summary>
 public static partial class ErrorPage
 {
+    /// <summary>
+    /// The <c>amr</c> value of a passkey sign-in (RFC 8176 <c>phr</c>: phishing-resistant hardware-protected key).
+    /// </summary>
+    private const string PasskeyAmr = "phr";
+
     private static readonly string Template = ReadTemplate();
 
     /// <summary>
@@ -20,15 +25,17 @@ public static partial class ErrorPage
     /// </summary>
     /// <param name="category">The failure category.</param>
     /// <param name="notNow">Whether a Disabled refusal is only for now (see <see cref="LoginFailure.NotNow"/>).</param>
+    /// <param name="requiredAmr">The configured required authentication method; PasskeyRequired names passkeys only for <c>phr</c>.</param>
     /// <returns>The message.</returns>
-    public static string Message(FailureCategory category, bool notNow = false) => category switch
+    public static string Message(FailureCategory category, bool notNow = false, string? requiredAmr = null) => category switch
     {
-        FailureCategory.Disabled when notNow => "You can't sign in right now.",
+        FailureCategory.Disabled when notNow => "You can't sign in right now. Please contact the server's administrator.",
+        FailureCategory.PasskeyRequired when requiredAmr == PasskeyAmr => "This server only accepts passkeys. Please sign in with your passkey.",
+        FailureCategory.PasskeyRequired => "This server requires a different sign-in method. Please sign in again with the method its administrator asks for.",
         FailureCategory.Cancelled => "Sign-in was cancelled.",
         FailureCategory.Expired => "Your sign-in has expired. Please try again.",
         FailureCategory.NotSetUp => "Your account isn't set up for this Jellyfin server. Please ask its administrator.",
         FailureCategory.Disabled => "Your Jellyfin account is disabled. Please contact the server's administrator.",
-        FailureCategory.PasskeyRequired => "This server only accepts passkeys. Please sign in with your passkey.",
         FailureCategory.Unavailable => "The sign-in service is unavailable right now. Please try again later.",
         _ => "Sign-in failed.",
     };
@@ -39,8 +46,9 @@ public static partial class ErrorPage
     /// <param name="category">The failure category.</param>
     /// <param name="reference">The reference code; left out unless it has the reference code format.</param>
     /// <param name="notNow">Whether a Disabled refusal is only for now (see <see cref="LoginFailure.NotNow"/>).</param>
+    /// <param name="requiredAmr">The configured required authentication method (see <see cref="Message"/>).</param>
     /// <returns>The page's HTML.</returns>
-    public static string Render(FailureCategory category, string? reference, bool notNow = false)
+    public static string Render(FailureCategory category, string? reference, bool notNow = false, string? requiredAmr = null)
     {
         // Links are relative to /OidcLogin/, so they hold under any base path.
         var actions = new StringBuilder();
@@ -56,7 +64,7 @@ public static partial class ErrorPage
             : string.Empty;
 
         return Template
-            .Replace("{{message}}", WebUtility.HtmlEncode(Message(category, notNow)), StringComparison.Ordinal)
+            .Replace("{{message}}", WebUtility.HtmlEncode(Message(category, notNow, requiredAmr)), StringComparison.Ordinal)
             .Replace("{{reference}}", referenceLine, StringComparison.Ordinal)
             .Replace("{{actions}}", actions.ToString(), StringComparison.Ordinal);
     }

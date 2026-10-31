@@ -132,7 +132,7 @@ public class OidcLoginController : ControllerBase
         {
             StatusCode = new LoginFailure(failureCategory, string.Empty).StatusCode,
             ContentType = MediaTypeNames.Text.Html + "; charset=utf-8",
-            Content = ErrorPage.Render(failureCategory, reference, notNow),
+            Content = ErrorPage.Render(failureCategory, reference, notNow, Plugin.Instance?.Configuration.RequiredAmr),
         };
     }
 
