@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
+using MediaBrowser.Controller.Session;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -376,10 +377,12 @@ public sealed class LoginCallbackTests : IDisposable
             new IdentityProviderClient(httpClientFactory),
             new FlowCookieProtector(_dataProtection),
             _users.Manager,
+            Substitute.For<ISessionManager>(),
             new LinkedIdentityStore(_dataFolder),
             handoffCodes ?? new HandoffCodes(_clock),
             _clock,
             () => _configuration,
+            new JellyfinWebClient("12.4.0"),
             NullLogger<OidcLoginService>.Instance);
     }
 }

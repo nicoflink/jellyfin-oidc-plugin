@@ -3,6 +3,7 @@ using Jellyfin.Plugin.OidcLogin.Login;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Controller.Session;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -28,10 +29,12 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             services.GetRequiredService<IdentityProviderClient>(),
             services.GetRequiredService<FlowCookieProtector>(),
             services.GetRequiredService<IUserManager>(),
+            services.GetRequiredService<ISessionManager>(),
             services.GetRequiredService<LinkedIdentityStore>(),
             services.GetRequiredService<HandoffCodes>(),
             services.GetRequiredService<TimeProvider>(),
             () => Plugin.Instance!.Configuration,
+            new JellyfinWebClient(applicationHost.ApplicationVersionString),
             services.GetRequiredService<ILogger<OidcLoginService>>()));
     }
 }
