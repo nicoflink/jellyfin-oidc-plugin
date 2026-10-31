@@ -1,9 +1,11 @@
 using System;
 using Jellyfin.Plugin.OidcLogin.Login;
+using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Session;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -36,5 +38,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             () => Plugin.Instance!.Configuration,
             new JellyfinWebClient(applicationHost.ApplicationVersionString),
             services.GetRequiredService<ILogger<OidcLoginService>>()));
+
+        // Runs for every MVC result; it acts only on the anonymous GET /Branding/Configuration.
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add(new BrandingFilter(() => Plugin.Instance!.Configuration)));
     }
 }

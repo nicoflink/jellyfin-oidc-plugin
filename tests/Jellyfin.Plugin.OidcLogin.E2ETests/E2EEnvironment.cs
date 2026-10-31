@@ -153,6 +153,7 @@ public sealed class E2EEnvironment : IAsyncLifetime
                     ClientId = OidcClientId,
                     ClientSecret = OidcClientSecret,
                     AdminGroup = JellyfinAdminsGroup,
+                    ShowSignInButton = true,
                 },
                 adminToken,
                 cancellationToken);

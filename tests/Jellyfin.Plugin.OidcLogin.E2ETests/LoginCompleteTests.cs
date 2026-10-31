@@ -7,8 +7,8 @@ using Xunit;
 namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 
 /// <summary>
-/// The whole OIDC Login (scenarios 1 without the button, and 2): from <c>/OidcLogin/Start</c> to signed in on Jellyfin's
-/// home page, in the same tab.
+/// The whole OIDC Login (scenarios 1 and 2): from the "Sign in with PocketID" button on the anonymous login page to
+/// signed in on Jellyfin's home page, in the same tab.
 /// </summary>
 public sealed class LoginCompleteTests(E2EEnvironment environment)
 {
@@ -80,7 +80,10 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
         await using var session = await environment.NewSessionAsync(withAlicePasskey: true);
         var page = session.Page;
 
-        await page.GotoAsync(new Uri(environment.JellyfinUrl, "OidcLogin/Start").ToString());
+        await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/login").ToString());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in with PocketID" }).ClickAsync();
+        await page.WaitForURLAsync(url => new Uri(url).Authority == environment.PocketIdUrl.Authority);
+        Assert.Single(session.Context.Pages);
         await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
 
         var webHome = new Uri(environment.JellyfinUrl, "web/").ToString();
