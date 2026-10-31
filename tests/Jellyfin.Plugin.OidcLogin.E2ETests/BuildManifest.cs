@@ -23,4 +23,24 @@ internal static class BuildManifest
         .Split('\n', StringSplitOptions.RemoveEmptyEntries)
         .Select(line => line.Trim().TrimStart('-').Trim().Trim('"'))
         .ToArray();
+
+    /// <summary>
+    /// Gets the files for <see cref="Artifacts"/> in <paramref name="directory"/>, failing loudly when one is
+    /// missing: Jellyfin would otherwise just not load the Plugin, and the fixture would fail later with a 404.
+    /// </summary>
+    /// <param name="directory">The build output holding the Plugin and its dependencies.</param>
+    /// <returns>The artifact files.</returns>
+    public static IReadOnlyList<FileInfo> ArtifactFiles(string directory)
+    {
+        var files = Artifacts.Select(artifact => new FileInfo(Path.Combine(directory, artifact))).ToArray();
+        var missing = files.Where(file => !file.Exists).Select(file => file.Name).ToArray();
+        if (missing.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"build.yaml lists artifacts missing from {directory}: {string.Join(", ", missing)}. "
+                + "Rebuild with `dotnet build --no-incremental`; an incremental build can leave dependencies uncopied.");
+        }
+
+        return files;
+    }
 }

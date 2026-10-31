@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -22,6 +23,28 @@ public sealed class HarnessTests(E2EEnvironment environment)
 
         var plugin = plugins.EnumerateArray().Single(p => p.GetProperty("Name").GetString() == "OIDC Login");
         Assert.Equal("Active", plugin.GetProperty("Status").GetString());
+    }
+
+    [Fact]
+    public void InstallingFromABuildMissingAnArtifactFailsNamingIt()
+    {
+        var bin = Directory.CreateTempSubdirectory("oidclogin-bin");
+        try
+        {
+            foreach (var artifact in BuildManifest.Artifacts.Skip(1))
+            {
+                File.WriteAllText(Path.Combine(bin.FullName, artifact), string.Empty);
+            }
+
+            var error = Assert.Throws<InvalidOperationException>(() => BuildManifest.ArtifactFiles(bin.FullName));
+
+            Assert.Contains(BuildManifest.Artifacts[0], error.Message, StringComparison.Ordinal);
+            Assert.Contains("--no-incremental", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            bin.Delete(recursive: true);
+        }
     }
 
     [Fact]
