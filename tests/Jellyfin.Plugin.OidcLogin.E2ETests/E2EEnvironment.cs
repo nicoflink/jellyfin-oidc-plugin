@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -263,6 +264,42 @@ public sealed class E2EEnvironment : IAsyncLifetime
         }
 
         return await BrowserSession.StartAsync(context, TestContext.Current.Test?.TestDisplayName ?? "session");
+    }
+
+    /// <summary>
+    /// Signs in to jellyfin-web with Jellyfin's Local Login as the setup admin.
+    /// </summary>
+    internal async Task LocalLoginAsAdminAsync(IPage page)
+    {
+        await page.GotoAsync(new Uri(JellyfinUrl, "web/#/login").ToString());
+        var manualLogin = page.GetByRole(AriaRole.Button, new() { Name = "Manual Login" });
+        var userName = page.GetByLabel("User");
+        await Assertions.Expect(manualLogin.Or(userName).First).ToBeVisibleAsync();
+        if (!await userName.IsVisibleAsync())
+        {
+            await manualLogin.ClickAsync();
+        }
+
+        await userName.FillAsync(JellyfinAdminName);
+        await page.GetByLabel("Password").FillAsync(JellyfinAdminPassword);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign In", Exact = true }).ClickAsync();
+        await page.WaitForURLAsync(url => url.Contains("#/home", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Runs an OIDC Login as Alice with her passkey, straight from <c>/OidcLogin/Start</c>.
+    /// </summary>
+    /// <returns>The Jellyfin user the login reached.</returns>
+    internal async Task<Guid> SignInWithPasskeyAsync()
+    {
+        await using var session = await NewSessionAsync(withAlicePasskey: true);
+        var page = session.Page;
+        await page.GotoAsync(new Uri(JellyfinUrl, "OidcLogin/Start").ToString());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
+        await page.WaitForURLAsync(url => url.Contains("/web/", StringComparison.Ordinal) && url.Contains("#/home", StringComparison.Ordinal));
+        var credentials = JsonDocument.Parse(await page.EvaluateAsync<string>("() => localStorage.getItem('jellyfin_credentials')")).RootElement;
+        var server = Assert.Single(credentials.GetProperty("Servers").EnumerateArray());
+        return Guid.Parse(server.GetProperty("UserId").GetString()!);
     }
 
     public async ValueTask DisposeAsync()

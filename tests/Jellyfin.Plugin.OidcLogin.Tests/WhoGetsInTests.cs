@@ -68,6 +68,23 @@ public sealed class WhoGetsInTests : IDisposable
     }
 
     [Fact]
+    public async Task UnlinkedUserWithProvisioningOffIsRefusedOnTheNextLogin()
+    {
+        Assert.Null((await LoginAsync()).Failure);
+        var alice = Assert.Single(_users.All);
+        Assert.True(new LinkedIdentityAdmin(new LinkedIdentityStore(_dataFolder), _users.Manager, _clock, () => _configuration).Unlink(alice.Id));
+        _configuration.JustInTimeProvisioning = false;
+        var before = _logger.Entries.Count;
+
+        var result = await LoginAsync();
+
+        Assert.Equal(FailureCategory.NotSetUp, result.Failure?.Category);
+        Assert.Same(alice, Assert.Single(_users.All));
+        Assert.Empty(new LinkedIdentityStore(_dataFolder).GetAll());
+        Assert.Equal(before + 1, _logger.Entries.Count);
+    }
+
+    [Fact]
     public async Task MissingUsernameClaimIsNotSetUp()
     {
         var result = await LoginAsync(claims => claims.Remove("preferred_username"));
