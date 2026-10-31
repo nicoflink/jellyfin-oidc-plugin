@@ -193,7 +193,7 @@ public sealed partial class FailureHandlingTests : IDisposable
 
         var result = await service.CallbackAsync(query, cookie, TestContext.Current.CancellationToken);
 
-        var entry = AssertLoggedOnce(result.Failure, FailureCategory.Failed, 500, LogLevel.Warning);
+        var entry = AssertLoggedOnce(result.Failure, FailureCategory.NotSetUp, 403, LogLevel.Warning);
         Assert.Equal($"'{Subject}'", entry.Values["Subject"]);
         Assert.Equal("'alice'", entry.Values["Username"]);
     }

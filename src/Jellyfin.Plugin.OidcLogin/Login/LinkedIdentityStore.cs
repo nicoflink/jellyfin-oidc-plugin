@@ -75,6 +75,27 @@ public sealed class LinkedIdentityStore
     }
 
     /// <summary>
+    /// Removes the link of a Jellyfin user.
+    /// </summary>
+    /// <param name="userId">The Jellyfin user's id.</param>
+    /// <returns><c>true</c> if the user was linked.</returns>
+    public bool RemoveUser(Guid userId)
+    {
+        lock (_lock)
+        {
+            var links = Load();
+            var kept = links.Where(l => l.UserId != userId).ToList();
+            if (kept.Count == links.Count)
+            {
+                return false;
+            }
+
+            Save(kept);
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Records a sign-in of a linked Jellyfin user.
     /// </summary>
     /// <param name="userId">The Jellyfin user's id.</param>
@@ -84,22 +105,6 @@ public sealed class LinkedIdentityStore
         lock (_lock)
         {
             Save(Load().Select(l => l.UserId == userId ? l with { LastLoginAt = at } : l).ToList());
-        }
-    }
-
-    /// <summary>
-    /// Removes a Jellyfin user's link, if it has one.
-    /// </summary>
-    /// <param name="userId">The Jellyfin user's id.</param>
-    public void RemoveUser(Guid userId)
-    {
-        lock (_lock)
-        {
-            var links = Load();
-            if (links.Any(l => l.UserId == userId))
-            {
-                Save(links.Where(l => l.UserId != userId).ToList());
-            }
         }
     }
 

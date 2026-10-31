@@ -31,6 +31,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
 
         // Resolved after the Plugin is loaded, so its data folder is known.
         serviceCollection.AddSingleton(_ => new LinkedIdentityStore(Plugin.Instance!.DataFolderPath));
+        serviceCollection.AddSingleton(services => new LinkedIdentityAdmin(
+            services.GetRequiredService<LinkedIdentityStore>(),
+            services.GetRequiredService<IUserManager>(),
+            services.GetRequiredService<TimeProvider>(),
+            () => Plugin.Instance!.Configuration));
         serviceCollection.AddSingleton(services => new OidcLoginService(
             services.GetRequiredService<IdentityProviderClient>(),
             services.GetRequiredService<FlowCookieProtector>(),

@@ -32,9 +32,14 @@ namespace Jellyfin.Plugin.OidcLogin.Login;
 /// </summary>
 public sealed partial class OidcLoginService : IDisposable
 {
+    /// <summary>
+    /// The query parameter marking Start reached through its redirect to the Public Jellyfin URL's host.
+    /// </summary>
+    public const string RedirectedToPublicHostParameter = "redirected";
+
     private static readonly TimeSpan FlowLifetime = TimeSpan.FromMinutes(10);
 
-    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required.") { Level = LogLevel.Error };
+    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required, and the Issuer URL must be https unless its host is loopback.") { Level = LogLevel.Error };
 
     private readonly IdentityProviderClient _identityProvider;
     private readonly FlowCookieProtector _flowCookie;
@@ -91,16 +96,34 @@ public sealed partial class OidcLoginService : IDisposable
     }
 
     /// <summary>
-    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie.
+    /// Starts an OIDC Login for a request already on the Public Jellyfin URL's host.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The redirect and flow cookie, or a failure.</returns>
-    public async Task<StartResult> StartAsync(CancellationToken cancellationToken)
+    public Task<StartResult> StartAsync(CancellationToken cancellationToken) => StartAsync(new StartRequest(null), cancellationToken);
+
+    /// <summary>
+    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie. A
+    /// request on another host is first sent to Start on the Public Jellyfin URL's host, where the Identity Provider
+    /// returns to and so where the flow cookie must be set.
+    /// </summary>
+    /// <param name="request">The browser's request.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The redirect and flow cookie, a redirect to the public host, or a failure.</returns>
+    public async Task<StartResult> StartAsync(StartRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var configuration = _configuration();
         if (!TryGetSettings(configuration, out var publicUrl, out var issuer))
         {
             return StartResult.Fail(Log(NotConfigured));
+        }
+
+        // Once only: a proxy that rewrites Host would otherwise loop. The target is the configured URL, so this is
+        // no open redirect.
+        if (request.Host is not null && !request.RedirectedToPublicHost && !IsHost(request.Host, publicUrl))
+        {
+            return StartResult.RedirectToPublicHost(new Uri(configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Start?" + RedirectedToPublicHostParameter + "=true"));
         }
 
         OpenIdConnectConfiguration discovery;
@@ -111,6 +134,10 @@ public sealed partial class OidcLoginService : IDisposable
         catch (InvalidOperationException e)
         {
             return StartResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+        catch (IdentityProviderException e)
+        {
+            return StartResult.Fail(Log(DiscoveryInvalid(e)));
         }
 
         if (string.IsNullOrEmpty(discovery.AuthorizationEndpoint))
@@ -162,6 +189,12 @@ public sealed partial class OidcLoginService : IDisposable
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
         }
 
+        // RFC 9207: on success and error alike. Discovery's issuer must equal the Issuer URL exactly, so this is it.
+        if (query.Iss is not null && !string.Equals(query.Iss, issuer.OriginalString, StringComparison.Ordinal))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"The callback's iss {LogText.Quote(query.Iss, 256)} isn't the Issuer URL.")));
+        }
+
         // Only after the state check: an unbound error response could otherwise be planted on someone's login.
         if (query.Error is not null)
         {
@@ -181,6 +214,10 @@ public sealed partial class OidcLoginService : IDisposable
         catch (InvalidOperationException e)
         {
             return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+        catch (IdentityProviderException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryInvalid(e)));
         }
 
         if (!Uri.TryCreate(discovery.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
@@ -209,11 +246,21 @@ public sealed partial class OidcLoginService : IDisposable
         JsonWebToken idToken;
         try
         {
-            idToken = await IdentityProviderClient.ValidateIdTokenAsync(rawIdToken, discovery, configuration.ClientId, flow.Nonce, _clock).ConfigureAwait(false);
+            idToken = await _identityProvider.ValidateIdTokenAsync(rawIdToken, issuer, discovery, configuration.ClientId, flow.Nonce, _clock, cancellationToken).ConfigureAwait(false);
         }
         catch (IdentityProviderException e)
         {
             return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, e.Message)));
+        }
+        catch (InvalidOperationException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+
+        // Before resolving, so a refused person is never provisioned or linked.
+        if (CheckAccess(idToken, configuration) is { } refusal)
+        {
+            return CallbackResult.Fail(Log(refusal));
         }
 
         var (user, failure) = await ResolveUserAsync(idToken, configuration).ConfigureAwait(false);
@@ -351,7 +398,7 @@ public sealed partial class OidcLoginService : IDisposable
 
     /// <summary>
     /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
-    /// URL, a client id and a client secret.
+    /// URL (https, or http on a loopback host), a client id and a client secret.
     /// </summary>
     /// <param name="configuration">The plugin configuration.</param>
     /// <returns><c>true</c> when an OIDC Login can start.</returns>
@@ -364,11 +411,15 @@ public sealed partial class OidcLoginService : IDisposable
     private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
         => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
 
+    private static LoginFailure DiscoveryInvalid(IdentityProviderException e)
+        => new(FailureCategory.Failed, e.Message) { Level = LogLevel.Error };
+
     private static bool TryGetSettings(PluginConfiguration configuration, [NotNullWhen(true)] out Uri? publicUrl, [NotNullWhen(true)] out Uri? issuer)
     {
         issuer = null;
         return TryGetHttpUrl(configuration.PublicJellyfinUrl, out publicUrl)
             && TryGetHttpUrl(configuration.IssuerUrl, out issuer)
+            && (issuer.Scheme == Uri.UriSchemeHttps || issuer.IsLoopback)
             && !string.IsNullOrEmpty(configuration.ClientId)
             && !string.IsNullOrEmpty(configuration.ClientSecret);
     }
@@ -388,6 +439,15 @@ public sealed partial class OidcLoginService : IDisposable
             value,
             new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
     }
+
+    /// <summary>
+    /// Whether a <c>Host</c> header names the Public Jellyfin URL's host and port. Its scheme isn't compared: behind
+    /// a TLS-terminating proxy the request is plain http.
+    /// </summary>
+    private static bool IsHost(string host, Uri publicUrl)
+        => Uri.TryCreate(publicUrl.Scheme + "://" + host, UriKind.Absolute, out var requestUrl)
+            && string.Equals(requestUrl.IdnHost, publicUrl.IdnHost, StringComparison.OrdinalIgnoreCase)
+            && requestUrl.Port == publicUrl.Port;
 
     private static bool IsOrigin(string? origin, Uri publicUrl)
         => Uri.TryCreate(origin, UriKind.Absolute, out var originUrl)
@@ -426,7 +486,8 @@ public sealed partial class OidcLoginService : IDisposable
     private static string CallbackUrl(PluginConfiguration configuration) => configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Callback";
 
     /// <summary>
-    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c> and the PKCE verifier.
+    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c>, the PKCE verifier and
+    /// provisioned users' passwords.
     /// </summary>
     private static string RandomToken() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
 
@@ -459,17 +520,50 @@ public sealed partial class OidcLoginService : IDisposable
                 _linkedIdentities.RemoveUser(link.UserId);
             }
 
-            if (UsernameClaim(idToken, configuration) is not { } username)
+            if (!configuration.JustInTimeProvisioning)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, $"The Subject can't be provisioned: the ID token has no {configuration.UsernameClaim} claim.") { Subject = subject });
+                return (null, new LoginFailure(FailureCategory.NotSetUp, "The Subject has no Linked Identity and Just-in-time Provisioning is off.") { Subject = subject, Username = UsernameClaim(idToken, configuration) });
             }
 
+            if (!idToken.TryGetPayloadValue<object>(configuration.UsernameClaim, out var usernameClaim) || usernameClaim is null)
+            {
+                return (null, new LoginFailure(FailureCategory.NotSetUp, $"The Subject can't be provisioned: the ID token has no {configuration.UsernameClaim} claim.") { Subject = subject });
+            }
+
+            if (usernameClaim is not string username || !JellyfinUsername().IsMatch(username))
+            {
+                return (null, new LoginFailure(FailureCategory.NotSetUp, $"The Subject can't be provisioned: its {configuration.UsernameClaim} claim isn't a valid Jellyfin username.") { Subject = subject, Username = usernameClaim as string });
+            }
+
+            // 12.x usernames are case-insensitive, so this also finds a case-only match. No suffix is ever tried.
             if (_userManager.GetUserByName(username) is not null)
             {
-                return (null, new LoginFailure(FailureCategory.Failed, "The Subject can't be provisioned: a Jellyfin user with its username claim already exists.") { Subject = subject, Username = username });
+                return (null, UsernameTaken(subject, username));
             }
 
-            var user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
+            User user;
+            try
+            {
+                user = await _userManager.CreateUserAsync(username).ConfigureAwait(false);
+            }
+            catch (ArgumentException)
+            {
+                // Jellyfin's own check: the name is taken after all, or its rules are stricter than ours.
+                return (null, UsernameTaken(subject, username));
+            }
+
+            // Jellyfin lets a user without a password Local Login with a blank one. This password is never stored or
+            // shown, so the only way into the user is OIDC Login, until an admin sets a password.
+            try
+            {
+                await _userManager.ChangePassword(user.Id, RandomToken()).ConfigureAwait(false);
+            }
+            catch
+            {
+                await _userManager.DeleteUserAsync(user.Id).ConfigureAwait(false);
+                throw;
+            }
+
             _linkedIdentities.Add(new LinkedIdentity(issuer, subject, user.Id, now, now));
             await SyncAdminGroupAsync(user, idToken, configuration).ConfigureAwait(false);
             return (user, null);
@@ -479,6 +573,38 @@ public sealed partial class OidcLoginService : IDisposable
             _resolveLock.Release();
         }
     }
+
+    /// <summary>
+    /// Enforces the Required Group (matched by name in the groups claim; an absent claim is no membership) and the
+    /// required <c>amr</c>, for linked and new Subjects alike.
+    /// </summary>
+    private static LoginFailure? CheckAccess(JsonWebToken idToken, PluginConfiguration configuration)
+    {
+        var subject = string.IsNullOrEmpty(idToken.Subject) ? null : idToken.Subject;
+        if (!string.IsNullOrEmpty(configuration.RequiredGroup)
+            && !(TryGetStrings(idToken, configuration.GroupsClaim, out var groups) && groups.Contains(configuration.RequiredGroup, StringComparer.Ordinal)))
+        {
+            return new LoginFailure(FailureCategory.NotSetUp, $"The person isn't in Required Group {configuration.RequiredGroup}, or the ID token has no {configuration.GroupsClaim} claim.") { Subject = subject, Username = UsernameClaim(idToken, configuration) };
+        }
+
+        var hasAmr = TryGetStrings(idToken, "amr", out var methods);
+        if (!string.IsNullOrEmpty(configuration.RequiredAmr) && !(hasAmr && methods!.Contains(configuration.RequiredAmr, StringComparer.Ordinal)))
+        {
+            var used = hasAmr ? "amr " + LogText.Quote(string.Join(' ', methods!), 64) : "no amr claim";
+            return new LoginFailure(FailureCategory.PasskeyRequired, $"The sign-in didn't use the required authentication method {configuration.RequiredAmr} ({used}).") { Subject = subject, Username = UsernameClaim(idToken, configuration) };
+        }
+
+        return null;
+    }
+
+    private static LoginFailure UsernameTaken(string subject, string username)
+        => new(FailureCategory.NotSetUp, "The Subject can't be provisioned: a Jellyfin user with its username claim already exists. Link it by hand if it is the same person.") { Subject = subject, Username = username };
+
+    /// <summary>
+    /// The usernames Jellyfin 12.4 accepts for a new user (<c>UserManager.ThrowIfInvalidUsername</c>).
+    /// </summary>
+    [GeneratedRegex(@"^(?!\s)[\w\ \-'._@+]+(?<!\s)$")]
+    private static partial Regex JellyfinUsername();
 
     /// <summary>
     /// Sets <see cref="PermissionKind.IsAdministrator"/> to Admin Group membership, and nothing else. Skipped when
@@ -492,7 +618,7 @@ public sealed partial class OidcLoginService : IDisposable
             return;
         }
 
-        if (!TryGetGroups(idToken, configuration.GroupsClaim, out var groups))
+        if (!TryGetStrings(idToken, configuration.GroupsClaim, out var groups))
         {
             LogAdminGroupSkipped(user.Id, configuration.GroupsClaim);
             return;
@@ -515,9 +641,9 @@ public sealed partial class OidcLoginService : IDisposable
     }
 
     /// <summary>
-    /// Reads the groups claim: a string array, or a single string.
+    /// Reads a claim holding names, such as the groups claim or <c>amr</c>: a string array, or a single string.
     /// </summary>
-    private static bool TryGetGroups(JsonWebToken idToken, string claim, [NotNullWhen(true)] out IReadOnlyCollection<string>? groups)
+    private static bool TryGetStrings(JsonWebToken idToken, string claim, [NotNullWhen(true)] out IReadOnlyCollection<string>? groups)
     {
         groups = null;
         if (!idToken.TryGetPayloadValue<JsonElement>(claim, out var value))

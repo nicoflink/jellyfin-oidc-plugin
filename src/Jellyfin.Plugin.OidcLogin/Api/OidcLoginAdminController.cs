@@ -20,14 +20,14 @@ namespace Jellyfin.Plugin.OidcLogin.Api;
 public class OidcLoginAdminController : ControllerBase
 {
     private readonly ConnectionTester _connectionTester;
-    private readonly LinkedIdentityStore _linkedIdentities;
+    private readonly LinkedIdentityAdmin _linkedIdentities;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcLoginAdminController"/> class.
     /// </summary>
     /// <param name="connectionTester">Runs Test connection.</param>
-    /// <param name="linkedIdentities">The Linked Identity store.</param>
-    public OidcLoginAdminController(ConnectionTester connectionTester, LinkedIdentityStore linkedIdentities)
+    /// <param name="linkedIdentities">Lists, links and unlinks Linked Identities.</param>
+    public OidcLoginAdminController(ConnectionTester connectionTester, LinkedIdentityAdmin linkedIdentities)
     {
         _connectionTester = connectionTester;
         _linkedIdentities = linkedIdentities;
@@ -48,7 +48,7 @@ public class OidcLoginAdminController : ControllerBase
         {
             configuration,
             clientSecretSet = !string.IsNullOrEmpty(configuration.ClientSecret),
-            linkedIdentityCount = _linkedIdentities.GetAll().Count,
+            linkedIdentityCount = _linkedIdentities.List().Count,
         });
     }
 
@@ -114,14 +114,62 @@ public class OidcLoginAdminController : ControllerBase
     }
 
     /// <summary>
+    /// Lists the Linked Identities.
+    /// </summary>
+    /// <returns>Each link's <c>issuer</c>, <c>subject</c>, <c>userId</c>, <c>userName</c>, <c>linkedAt</c> and <c>lastLoginAt</c>.</returns>
+    [HttpGet("LinkedIdentities")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult GetLinkedIdentities() => Json(_linkedIdentities.List());
+
+    /// <summary>
+    /// Links an existing Jellyfin user to a <c>sub</c> at the configured Issuer URL.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>No content, or a bad request with a <c>message</c> saying why the link was refused.</returns>
+    [HttpPost("LinkedIdentities")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult> Link(CancellationToken cancellationToken)
+    {
+        LinkRequest? request;
+        try
+        {
+            request = await JsonSerializer.DeserializeAsync<LinkRequest>(Request.Body, JsonSerializerOptions.Web, cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            request = null;
+        }
+
+        if (request is not { Subject: { } subject } || !Guid.TryParse(request.UserId, out var userId))
+        {
+            return BadRequest();
+        }
+
+        return _linkedIdentities.Link(userId, subject) is { } refusal
+            ? Json(new { message = refusal }, StatusCodes.Status400BadRequest)
+            : NoContent();
+    }
+
+    /// <summary>
+    /// Unlinks a Jellyfin user. The user stays.
+    /// </summary>
+    /// <param name="userId">The Jellyfin user.</param>
+    /// <returns>No content, or not found if the user wasn't linked.</returns>
+    [HttpDelete("LinkedIdentities/{userId}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult Unlink([FromRoute] Guid userId) => _linkedIdentities.Unlink(userId) ? NoContent() : NotFound();
+
+    /// <summary>
     /// Serializes <paramref name="value"/> with fixed camelCase names, independent of Jellyfin's MVC JSON settings.
     /// </summary>
-    private ContentResult Json(object value)
+    private ContentResult Json(object value, int statusCode = StatusCodes.Status200OK)
     {
         Response.Headers.CacheControl = "no-store";
         return new ContentResult
         {
-            StatusCode = StatusCodes.Status200OK,
+            StatusCode = statusCode,
             ContentType = MediaTypeNames.Application.Json,
             Content = JsonSerializer.Serialize(value, JsonSerializerOptions.Web),
         };
@@ -130,4 +178,7 @@ public class OidcLoginAdminController : ControllerBase
     private sealed record ConfigurationUpdate(PluginConfiguration? Configuration, string? ClientSecret);
 
     private sealed record TestConnectionRequest(string? IssuerUrl);
+
+    // The user id as a string: Jellyfin's API writes ids without dashes, which System.Text.Json won't read as a Guid.
+    private sealed record LinkRequest(string? UserId, string? Subject);
 }

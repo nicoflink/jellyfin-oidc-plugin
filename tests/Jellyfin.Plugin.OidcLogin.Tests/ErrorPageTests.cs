@@ -46,6 +46,18 @@ public sealed class ErrorPageTests
         Assert.Contains("href=\"Start\">Try again</a>", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void NotSetUpSaysTheAccountIsNotSetUp()
+    {
+        Assert.StartsWith("Your account isn't set up for this Jellyfin server", ErrorPage.Message(FailureCategory.NotSetUp), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PasskeyRequiredAsksForThePasskey()
+    {
+        Assert.Contains("sign in with your passkey", ErrorPage.Message(FailureCategory.PasskeyRequired), StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("<script>alert(1)</script>")]
     [InlineData("7k3qx9tz")]

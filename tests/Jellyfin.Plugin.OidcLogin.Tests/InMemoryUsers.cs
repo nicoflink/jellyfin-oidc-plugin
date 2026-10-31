@@ -18,6 +18,7 @@ internal sealed class InMemoryUsers
 {
     private readonly List<User> _users = [];
     private readonly Dictionary<Guid, bool> _savedAdministrators = [];
+    private readonly Dictionary<Guid, string> _passwords = [];
 
     public InMemoryUsers()
     {
@@ -29,6 +30,11 @@ internal sealed class InMemoryUsers
         Manager.UpdateUserAsync(Arg.Any<User>()).Returns(call =>
         {
             Save(call.Arg<User>());
+            return Task.CompletedTask;
+        });
+        Manager.ChangePassword(Arg.Any<Guid>(), Arg.Any<string>()).Returns(call =>
+        {
+            _passwords[call.Arg<Guid>()] = call.Arg<string>();
             return Task.CompletedTask;
         });
     }
@@ -62,6 +68,11 @@ internal sealed class InMemoryUsers
     }
 
     public bool IsSavedAdministrator(User user) => _savedAdministrators[user.Id];
+
+    /// <summary>
+    /// Gets the password last set through <see cref="IUserManager.ChangePassword"/>; null for a blank password.
+    /// </summary>
+    public string? PasswordOf(User user) => _passwords.GetValueOrDefault(user.Id);
 
     public void Remove(User user) => _users.Remove(user);
 

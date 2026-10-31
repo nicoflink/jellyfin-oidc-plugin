@@ -45,16 +45,23 @@ public class OidcLoginController : ControllerBase
     /// <summary>
     /// Starts an OIDC Login by redirecting to the Identity Provider.
     /// </summary>
+    /// <param name="redirected">Whether Start already sent the browser to the Public Jellyfin URL's host.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>A redirect to the Identity Provider, or to the error page.</returns>
+    /// <returns>A redirect to the Identity Provider, to Start on the public host, or to the error page.</returns>
     [HttpGet("Start")]
     [ProducesResponseType(StatusCodes.Status302Found)]
-    public async Task<ActionResult> Start(CancellationToken cancellationToken)
+    public async Task<ActionResult> Start([FromQuery(Name = OidcLoginService.RedirectedToPublicHostParameter)] bool redirected, CancellationToken cancellationToken)
     {
-        var result = await _loginService.StartAsync(cancellationToken).ConfigureAwait(false);
+        var request = new StartRequest(Request.Host.HasValue ? Request.Host.Value : null, redirected);
+        var result = await _loginService.StartAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure)
         {
             return RedirectToError(failure);
+        }
+
+        if (result.PublicHostUrl is { } publicHostUrl)
+        {
+            return Redirect(publicHostUrl.ToString());
         }
 
         var cookie = result.FlowCookie!;
@@ -69,6 +76,7 @@ public class OidcLoginController : ControllerBase
     /// <param name="state">The <c>state</c> echoed from Start.</param>
     /// <param name="error">The Identity Provider's <c>error</c>, sent instead of a code.</param>
     /// <param name="errorDescription">The Identity Provider's <c>error_description</c>.</param>
+    /// <param name="iss">The RFC 9207 <c>iss</c> naming the Identity Provider that answered.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>A redirect to <c>/OidcLogin/Complete</c> with a handoff code, or to the error page.</returns>
     [HttpGet("Callback")]
@@ -78,9 +86,10 @@ public class OidcLoginController : ControllerBase
         [FromQuery] string? state,
         [FromQuery] string? error,
         [FromQuery(Name = "error_description")] string? errorDescription,
+        [FromQuery] string? iss,
         CancellationToken cancellationToken)
     {
-        var result = await _loginService.CallbackAsync(new CallbackQuery(code, state, error, errorDescription), FlowCookieValue(), cancellationToken).ConfigureAwait(false);
+        var result = await _loginService.CallbackAsync(new CallbackQuery(code, state, error, errorDescription, iss), FlowCookieValue(), cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure)
         {
             return RedirectToError(failure);
