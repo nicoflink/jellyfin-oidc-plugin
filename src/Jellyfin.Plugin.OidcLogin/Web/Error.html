@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>Sign-in problem</title>
+    <style>
+        body { margin: 0; padding: 20vh 16px 0; font-family: sans-serif; background: #101010; color: #ddd; text-align: center; }
+        main { max-width: 32em; margin: 0 auto; }
+        h1 { font-size: 1.4em; font-weight: normal; }
+        code { font-size: 1.1em; color: #fff; letter-spacing: 0.1em; }
+        .actions { margin-top: 2em; display: flex; gap: 1em; justify-content: center; flex-wrap: wrap; }
+        .actions a { padding: 0.6em 1.4em; border-radius: 4px; background: #292929; color: #fff; text-decoration: none; }
+        .actions a.primary { background: #00a4dc; }
+    </style>
+</head>
+<body>
+<main>
+    <h1 id="message">{{message}}</h1>
+{{reference}}
+    <p class="actions">
+{{actions}}
+    </p>
+</main>
+</body>
+</html>
