@@ -1,0 +1,311 @@
+<div id="OidcLoginConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+  <style>
+    #OidcLoginConfigPage .oidc-step { border: 1px solid rgba(128, 128, 128, .35); border-radius: 6px; margin: 1em 0; padding: 0 1em 1em; }
+    #OidcLoginConfigPage .oidc-step > h2 { display: flex; gap: .75em; align-items: center; }
+    #OidcLoginConfigPage .oidc-badge { display: inline-flex; flex: none; width: 1.8em; height: 1.8em; border-radius: 50%; align-items: center; justify-content: center; background: rgba(128, 128, 128, .35); font-size: .8em; }
+    #OidcLoginConfigPage .oidc-step.oidc-done .oidc-badge { background: #1e8c3a; color: #fff; }
+    #OidcLoginConfigPage .oidc-callback { display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
+    #OidcLoginConfigPage .oidc-callback code { flex: 1; min-width: 12em; padding: .5em; background: rgba(128, 128, 128, .15); word-break: break-all; }
+    #OidcLoginConfigPage .oidc-warning { border-left: 4px solid #e5a00d; padding: .5em 1em; margin: .5em 0; background: rgba(229, 160, 13, .12); }
+    #OidcLoginConfigPage .oidc-ok { color: #52b54b; }
+    #OidcLoginConfigPage .oidc-error { color: #cc3333; }
+    #OidcLoginConfigPage [hidden] { display: none !important; }
+  </style>
+  <div data-role="content">
+    <div class="content-primary">
+      <form class="oidcConfigForm">
+        <div class="verticalSection">
+          <h2 class="sectionTitle">OIDC Login</h2>
+          <p>Let people sign in to Jellyfin's web UI through your OpenID Connect Identity Provider. Work through the steps in order; Local Login keeps working throughout.</p>
+        </div>
+
+        <div class="oidc-step" data-step="1">
+          <h2><span class="oidc-badge">1</span><span>Register at your Identity Provider</span></h2>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcPublicJellyfinUrl">Public Jellyfin URL</label>
+            <input id="oidcPublicJellyfinUrl" type="url" is="emby-input" required placeholder="https://jellyfin.example.com" />
+            <div class="fieldDescription">Required. The address people type into their browser to reach Jellyfin, behind any reverse proxy.</div>
+          </div>
+          <div class="inputContainer">
+            <div class="inputLabel">Callback URL</div>
+            <div class="oidc-callback">
+              <code id="oidcCallbackUrl"></code>
+              <button id="oidcCopyCallback" is="emby-button" type="button" class="raised"><span>Copy</span></button>
+              <span id="oidcCopyResult" role="status"></span>
+            </div>
+          </div>
+          <p>At your Identity Provider, create a <b>confidential</b> OIDC client (one with a client secret) for Jellyfin:</p>
+          <ul>
+            <li>Enforce <b>PKCE</b>.</li>
+            <li>Register the callback URL above as the redirect URI, exactly as shown.</li>
+            <li>Restrict the client to the groups that should be able to sign in to Jellyfin.</li>
+          </ul>
+        </div>
+
+        <div class="oidc-step" data-step="2">
+          <h2><span class="oidc-badge">2</span><span>Connect</span></h2>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcIssuerUrl">Issuer URL</label>
+            <input id="oidcIssuerUrl" type="url" is="emby-input" placeholder="https://id.example.com" />
+            <div class="fieldDescription">Discovery is fetched from <code>&lt;Issuer URL&gt;/.well-known/openid-configuration</code>, and its issuer must equal this exactly.</div>
+          </div>
+          <div id="oidcIssuerWarning" class="oidc-warning" role="alert" hidden></div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcClientId">Client ID</label>
+            <input id="oidcClientId" type="text" is="emby-input" autocomplete="off" />
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcClientSecret">Client secret</label>
+            <input id="oidcClientSecret" type="password" is="emby-input" autocomplete="new-password" />
+            <div class="fieldDescription">Currently <b id="oidcClientSecretStatus">not set</b>. The secret is never shown again after saving; leave this empty to keep it.</div>
+          </div>
+          <div class="inputContainer">
+            <button id="oidcTestConnection" is="emby-button" type="button" class="raised"><span>Test connection</span></button>
+            <div id="oidcTestResult" role="status"></div>
+          </div>
+          <details>
+            <summary style="cursor: pointer; margin: .5em 0;">Advanced</summary>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="oidcScopes">Scopes</label>
+              <input id="oidcScopes" type="text" is="emby-input" />
+              <div class="fieldDescription">Space-separated. Include <code>groups</code> for Required Group and Admin Group.</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="oidcUsernameClaim">Username claim</label>
+              <input id="oidcUsernameClaim" type="text" is="emby-input" />
+              <div class="fieldDescription">Names a new Jellyfin user at Just-in-time Provisioning; never synced afterwards.</div>
+            </div>
+            <div class="inputContainer">
+              <label class="inputLabel inputLabelUnfocused" for="oidcGroupsClaim">Groups claim</label>
+              <input id="oidcGroupsClaim" type="text" is="emby-input" />
+              <div class="fieldDescription">The ID token claim listing the person's group names.</div>
+            </div>
+          </details>
+        </div>
+
+        <div class="oidc-step" data-step="3">
+          <h2><span class="oidc-badge">3</span><span>Who gets in</span></h2>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label class="emby-checkbox-label">
+              <input id="oidcJustInTimeProvisioning" type="checkbox" is="emby-checkbox" />
+              <span>Create a Jellyfin user at a person's first sign-in (Just-in-time Provisioning)</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">When off, only people whose Identity Provider account is linked to a Jellyfin user can sign in.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcRequiredGroup">Required Group</label>
+            <input id="oidcRequiredGroup" type="text" is="emby-input" />
+            <div class="fieldDescription">Only members of this Identity Provider group can sign in. Leave empty to let everyone in.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcAdminGroup">Admin Group</label>
+            <input id="oidcAdminGroup" type="text" is="emby-input" />
+            <div class="fieldDescription">Members become Jellyfin administrators, and lose it when removed. Leave empty to manage administrators in Jellyfin only.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="oidcRequiredAmr">Required authentication method (amr)</label>
+            <input id="oidcRequiredAmr" type="text" is="emby-input" />
+            <div class="fieldDescription">Set to <code>phr</code> to accept passkey sign-ins only. Leave empty to accept any.</div>
+          </div>
+        </div>
+
+        <div class="oidc-step" data-step="4">
+          <h2><span class="oidc-badge">4</span><span>Sign-in button</span></h2>
+          <p id="oidcButtonMissing" class="oidc-warning" hidden></p>
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label class="emby-checkbox-label">
+              <input id="oidcShowLoginButton" type="checkbox" is="emby-checkbox" />
+              <span>Show the sign-in button on the login page</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">Shown in Jellyfin's web client only. Native and TV apps sign in with Quick Connect.</div>
+          </div>
+        </div>
+
+        <div>
+          <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
+          <div id="oidcSaveResult" role="status"></div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="text/javascript">
+    (function () {
+      var page = document.querySelector('#OidcLoginConfigPage');
+      var savedIssuerUrl = '';
+      var clientSecretSet = false;
+      var linkedIdentityCount = 0;
+
+      function field(id) { return page.querySelector('#' + id); }
+      function value(id) { return field(id).value.trim(); }
+      function show(id, text, className) {
+        var element = field(id);
+        element.textContent = text || '';
+        element.className = className || '';
+        element.hidden = !text;
+      }
+
+      function isHttpUrl(text) {
+        try {
+          var url = new URL(text);
+          return url.protocol === 'https:' || url.protocol === 'http:';
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function callbackUrl() {
+        var publicUrl = value('oidcPublicJellyfinUrl');
+        return isHttpUrl(publicUrl) ? publicUrl.replace(/\/+$/, '') + '/OidcLogin/Callback' : '';
+      }
+
+      function missing() {
+        var names = [];
+        if (!isHttpUrl(value('oidcPublicJellyfinUrl'))) names.push('Public Jellyfin URL');
+        if (!isHttpUrl(value('oidcIssuerUrl'))) names.push('Issuer URL');
+        if (!value('oidcClientId')) names.push('Client ID');
+        if (!clientSecretSet && !field('oidcClientSecret').value) names.push('Client secret');
+        return names;
+      }
+
+      function issuerChangeOrphansLinks() {
+        return linkedIdentityCount > 0 && value('oidcIssuerUrl') !== savedIssuerUrl;
+      }
+
+      function orphanWarning() {
+        return 'Changing the Issuer URL orphans all ' + linkedIdentityCount + ' Linked Identities: those people are treated as new at their next sign-in.';
+      }
+
+      function render() {
+        var callback = callbackUrl();
+        field('oidcCallbackUrl').textContent = callback || 'Enter the Public Jellyfin URL first.';
+        field('oidcCopyCallback').disabled = !callback;
+
+        var gaps = missing();
+        var stepDone = {
+          1: gaps.indexOf('Public Jellyfin URL') < 0,
+          2: gaps.indexOf('Issuer URL') < 0 && gaps.indexOf('Client ID') < 0 && gaps.indexOf('Client secret') < 0,
+          3: true,
+          4: gaps.length === 0 && field('oidcShowLoginButton').checked
+        };
+        page.querySelectorAll('.oidc-step').forEach(function (step) {
+          step.classList.toggle('oidc-done', stepDone[step.getAttribute('data-step')]);
+        });
+
+        field('oidcShowLoginButton').disabled = gaps.length > 0;
+        show('oidcButtonMissing', gaps.length ? 'Finish steps 1 and 2 first, missing: ' + gaps.join(', ') + '.' : '', 'oidc-warning');
+        show('oidcIssuerWarning', issuerChangeOrphansLinks() ? orphanWarning() : '', 'oidc-warning');
+        field('oidcClientSecretStatus').textContent = clientSecretSet ? 'set' : 'not set';
+      }
+
+      function load() {
+        Dashboard.showLoadingMsg();
+        return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('OidcLogin/Configuration'), dataType: 'json' }).then(function (result) {
+          var c = result.configuration;
+          field('oidcPublicJellyfinUrl').value = c.publicJellyfinUrl;
+          field('oidcIssuerUrl').value = c.issuerUrl;
+          field('oidcClientId').value = c.clientId;
+          field('oidcClientSecret').value = '';
+          field('oidcScopes').value = c.scopes;
+          field('oidcUsernameClaim').value = c.usernameClaim;
+          field('oidcGroupsClaim').value = c.groupsClaim;
+          field('oidcJustInTimeProvisioning').checked = c.justInTimeProvisioning;
+          field('oidcRequiredGroup').value = c.requiredGroup;
+          field('oidcAdminGroup').value = c.adminGroup;
+          field('oidcRequiredAmr').value = c.requiredAmr;
+          field('oidcShowLoginButton').checked = c.showLoginButton;
+          savedIssuerUrl = c.issuerUrl;
+          clientSecretSet = result.clientSecretSet;
+          linkedIdentityCount = result.linkedIdentityCount;
+          render();
+        }).finally(function () {
+          Dashboard.hideLoadingMsg();
+        });
+      }
+
+      function save() {
+        if (issuerChangeOrphansLinks() && !window.confirm(orphanWarning() + ' Save anyway?')) {
+          return;
+        }
+
+        var body = {
+          configuration: {
+            publicJellyfinUrl: value('oidcPublicJellyfinUrl'),
+            issuerUrl: value('oidcIssuerUrl'),
+            clientId: value('oidcClientId'),
+            scopes: value('oidcScopes'),
+            usernameClaim: value('oidcUsernameClaim'),
+            groupsClaim: value('oidcGroupsClaim'),
+            justInTimeProvisioning: field('oidcJustInTimeProvisioning').checked,
+            requiredGroup: value('oidcRequiredGroup'),
+            adminGroup: value('oidcAdminGroup'),
+            requiredAmr: value('oidcRequiredAmr'),
+            showLoginButton: field('oidcShowLoginButton').checked
+          },
+          clientSecret: field('oidcClientSecret').value
+        };
+        Dashboard.showLoadingMsg();
+        show('oidcSaveResult', '');
+        ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('OidcLogin/Configuration'), data: JSON.stringify(body), contentType: 'application/json' }).then(function () {
+          return load().then(function () { show('oidcSaveResult', 'Saved.', 'oidc-ok'); });
+        }, function () {
+          show('oidcSaveResult', 'Saving failed.', 'oidc-error');
+        }).finally(function () {
+          Dashboard.hideLoadingMsg();
+        });
+      }
+
+      function testConnection() {
+        show('oidcTestResult', 'Testing...');
+        ApiClient.ajax({
+          type: 'POST',
+          url: ApiClient.getUrl('OidcLogin/TestConnection'),
+          data: JSON.stringify({ issuerUrl: value('oidcIssuerUrl') }),
+          contentType: 'application/json',
+          dataType: 'json'
+        }).then(function (result) {
+          var element = field('oidcTestResult');
+          element.textContent = '';
+          element.hidden = false;
+          var message = document.createElement('div');
+          message.className = result.succeeded ? 'oidc-ok' : 'oidc-error';
+          message.textContent = result.message;
+          element.appendChild(message);
+          result.warnings.forEach(function (warning) {
+            var line = document.createElement('div');
+            line.className = 'oidc-warning';
+            line.textContent = warning;
+            element.appendChild(line);
+          });
+        }, function () {
+          show('oidcTestResult', 'Test connection failed to run.', 'oidc-error');
+        });
+      }
+
+      function copyCallback() {
+        var text = callbackUrl();
+        var copied = navigator.clipboard && window.isSecureContext
+          ? navigator.clipboard.writeText(text)
+          : new Promise(function (resolve, reject) {
+            var selection = window.getSelection();
+            var range = document.createRange();
+            range.selectNodeContents(field('oidcCallbackUrl'));
+            selection.removeAllRanges();
+            selection.addRange(range);
+            (document.execCommand('copy') ? resolve : reject)();
+          });
+        copied.then(function () { show('oidcCopyResult', 'Copied.'); }, function () { show('oidcCopyResult', 'Select the URL and copy it by hand.'); });
+      }
+
+      page.querySelector('.oidcConfigForm').addEventListener('input', render);
+      page.querySelector('.oidcConfigForm').addEventListener('change', render);
+      page.querySelector('.oidcConfigForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        save();
+      });
+      field('oidcTestConnection').addEventListener('click', testConnection);
+      field('oidcCopyCallback').addEventListener('click', copyCallback);
+      page.addEventListener('pageshow', load);
+    })();
+  </script>
+</div>

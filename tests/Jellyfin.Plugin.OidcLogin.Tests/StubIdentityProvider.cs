@@ -46,6 +46,21 @@ internal sealed class StubIdentityProvider : HttpMessageHandler
     public bool OmitAuthorizationEndpoint { get; set; }
 
     /// <summary>
+    /// Gets or sets the discovery <c>scopes_supported</c>; left out when <c>null</c>.
+    /// </summary>
+    public string[]? ScopesSupported { get; set; }
+
+    /// <summary>
+    /// Gets or sets the <c>issuer</c> discovery claims.
+    /// </summary>
+    public string DiscoveryIssuer { get; set; } = Issuer;
+
+    /// <summary>
+    /// Gets or sets the status discovery answers with.
+    /// </summary>
+    public HttpStatusCode DiscoveryStatus { get; set; } = HttpStatusCode.OK;
+
+    /// <summary>
     /// Gets or sets the ID token the token endpoint returns.
     /// </summary>
     public string? IdToken { get; set; }
@@ -91,11 +106,17 @@ internal sealed class StubIdentityProvider : HttpMessageHandler
             return Json(TokenStatus, tokenBody);
         }
 
+        if (request.RequestUri == DiscoveryUrl && DiscoveryStatus != HttpStatusCode.OK)
+        {
+            return new HttpResponseMessage(DiscoveryStatus);
+        }
+
         var body = request.RequestUri switch
         {
             var u when u == DiscoveryUrl => $$"""
                 {
-                  "issuer": "{{Issuer}}",
+                  "issuer": "{{DiscoveryIssuer}}",
+                  {{(ScopesSupported is null ? string.Empty : $"\"scopes_supported\": {JsonSerializer.Serialize(ScopesSupported)},")}}
                   {{(OmitAuthorizationEndpoint ? string.Empty : $"\"authorization_endpoint\": \"{AuthorizationEndpoint}\",")}}
                   "token_endpoint": "{{TokenEndpoint}}",
                   "jwks_uri": "{{JwksUri}}",

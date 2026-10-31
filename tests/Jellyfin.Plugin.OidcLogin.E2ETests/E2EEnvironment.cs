@@ -133,12 +133,15 @@ public sealed class E2EEnvironment : IAsyncLifetime
             await jellyfin.CompleteStartupWizardAsync(JellyfinAdminName, JellyfinAdminPassword, cancellationToken);
             var adminToken = await jellyfin.AuthenticateAsync(JellyfinAdminName, JellyfinAdminPassword, cancellationToken);
             await jellyfin.PostAsAdminAsync(
-                $"Plugins/{BuildManifest.PluginId}/Configuration",
+                "OidcLogin/Configuration",
                 new
                 {
-                    PublicJellyfinUrl = JellyfinUrl.ToString(),
-                    IssuerUrl = PocketIdUrl.ToString().TrimEnd('/'),
-                    ClientId = OidcClientId,
+                    Configuration = new
+                    {
+                        PublicJellyfinUrl = JellyfinUrl.ToString(),
+                        IssuerUrl = PocketIdUrl.ToString().TrimEnd('/'),
+                        ClientId = OidcClientId,
+                    },
                     ClientSecret = OidcClientSecret,
                 },
                 adminToken,

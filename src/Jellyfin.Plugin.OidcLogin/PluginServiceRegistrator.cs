@@ -1,4 +1,5 @@
 using System;
+using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -20,6 +21,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.TryAddSingleton(TimeProvider.System);
         serviceCollection.AddSingleton<IdentityProviderClient>();
+        serviceCollection.AddSingleton<ConnectionTester>();
         serviceCollection.AddSingleton<FlowCookieProtector>();
         serviceCollection.AddSingleton<HandoffCodes>();
 
