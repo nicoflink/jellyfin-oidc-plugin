@@ -44,10 +44,11 @@ public sealed class LoginStartTests(E2EEnvironment environment)
         // The passkey completes the authorization PocketID accepted, so it comes back to the Callback with a code.
         var authorizeState = HttpUtility.ParseQueryString(authorizationUrl.Query)["state"];
         var callback = new Uri(environment.JellyfinUrl, "OidcLogin/Callback").ToString();
-        await signIn.ClickAsync();
-        await page.WaitForURLAsync(url => url.StartsWith(callback, StringComparison.Ordinal));
+        var callbackRequest = await page.RunAndWaitForRequestAsync(
+            () => signIn.ClickAsync(),
+            request => request.Url.StartsWith(callback, StringComparison.Ordinal));
 
-        var query = HttpUtility.ParseQueryString(new Uri(page.Url).Query);
+        var query = HttpUtility.ParseQueryString(new Uri(callbackRequest.Url).Query);
         Assert.Null(query["error"]);
         Assert.False(string.IsNullOrEmpty(query["code"]));
         Assert.False(string.IsNullOrEmpty(authorizeState));

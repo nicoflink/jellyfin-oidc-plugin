@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.OidcLogin.Configuration;
@@ -23,8 +24,10 @@ public class PluginConfiguration : BasePluginConfiguration
     public string ClientId { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the client secret registered at the Identity Provider.
+    /// Gets or sets the client secret registered at the Identity Provider. It is written only to the Plugin's
+    /// configuration file and never into JSON, so no API response carries it.
     /// </summary>
+    [JsonIgnore]
     public string ClientSecret { get; set; } = string.Empty;
 
     /// <summary>
@@ -41,4 +44,33 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets the ID token claim holding the person's Identity Provider group names.
     /// </summary>
     public string GroupsClaim { get; set; } = "groups";
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a Subject without a Linked Identity gets a new Jellyfin user
+    /// (Just-in-time Provisioning) rather than being refused.
+    /// </summary>
+    public bool JustInTimeProvisioning { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets the Identity Provider group a person must belong to for an OIDC Login; empty lets everyone in.
+    /// </summary>
+    public string RequiredGroup { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the Identity Provider group whose members are Jellyfin administrators; empty turns Admin Group
+    /// sync off.
+    /// </summary>
+    public string AdminGroup { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the authentication method the ID token's <c>amr</c> must contain (<c>phr</c>: passkey only);
+    /// empty accepts any.
+    /// </summary>
+    public string RequiredAmr { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the Login Entry Point button shows on the web login page once the
+    /// Plugin is fully configured.
+    /// </summary>
+    public bool ShowSignInButton { get; set; }
 }

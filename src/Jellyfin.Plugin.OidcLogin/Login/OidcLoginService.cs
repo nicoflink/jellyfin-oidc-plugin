@@ -2,29 +2,51 @@ using System;
 using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using MediaBrowser.Controller.Authentication;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Session;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace Jellyfin.Plugin.OidcLogin.Login;
 
 /// <summary>
-/// Runs the OIDC Login flow, starting with Start; Callback and Complete join it as they are built.
+/// Runs the OIDC Login flow: Start, Callback and Complete.
 /// </summary>
-public sealed partial class OidcLoginService
+public sealed partial class OidcLoginService : IDisposable
 {
+    /// <summary>
+    /// The query parameter marking Start reached through its redirect to the Public Jellyfin URL's host.
+    /// </summary>
+    public const string RedirectedToPublicHostParameter = "redirected";
+
     private static readonly TimeSpan FlowLifetime = TimeSpan.FromMinutes(10);
+
+    private static readonly LoginFailure NotConfigured = new(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required, and the Issuer URL must be https unless its host is loopback.") { Level = LogLevel.Error };
 
     private readonly IdentityProviderClient _identityProvider;
     private readonly FlowCookieProtector _flowCookie;
+    private readonly IUserManager _userManager;
+    private readonly ISessionManager _sessionManager;
+    private readonly LinkedIdentityStore _linkedIdentities;
+    private readonly UserResolver _users;
+    private readonly HandoffCodes _handoffCodes;
     private readonly TimeProvider _clock;
     private readonly Func<PluginConfiguration> _configuration;
+    private readonly JellyfinWebClient _webClient;
     private readonly ILogger<OidcLoginService> _logger;
 
     /// <summary>
@@ -32,52 +54,91 @@ public sealed partial class OidcLoginService
     /// </summary>
     /// <param name="identityProvider">The Identity Provider client.</param>
     /// <param name="flowCookie">Protects the flow cookie.</param>
+    /// <param name="userManager">Jellyfin's user manager.</param>
+    /// <param name="sessionManager">Jellyfin's session manager.</param>
+    /// <param name="linkedIdentities">The Linked Identity store.</param>
+    /// <param name="handoffCodes">The handoff codes Callback mints for Complete.</param>
     /// <param name="clock">The clock.</param>
     /// <param name="configuration">Reads the current Plugin configuration.</param>
+    /// <param name="webClient">What jellyfin-web reports when it signs in.</param>
     /// <param name="logger">The logger.</param>
     public OidcLoginService(
         IdentityProviderClient identityProvider,
         FlowCookieProtector flowCookie,
+        IUserManager userManager,
+        ISessionManager sessionManager,
+        LinkedIdentityStore linkedIdentities,
+        HandoffCodes handoffCodes,
         TimeProvider clock,
         Func<PluginConfiguration> configuration,
+        JellyfinWebClient webClient,
         ILogger<OidcLoginService> logger)
     {
         _identityProvider = identityProvider;
         _flowCookie = flowCookie;
+        _userManager = userManager;
+        _sessionManager = sessionManager;
+        _linkedIdentities = linkedIdentities;
+        _users = new UserResolver(userManager, linkedIdentities, clock, logger);
+        _handoffCodes = handoffCodes;
         _clock = clock;
         _configuration = configuration;
+        _webClient = webClient;
         _logger = logger;
     }
 
     /// <summary>
-    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie.
+    /// Whether <paramref name="configuration"/> has everything an OIDC Login needs: a Public Jellyfin URL, an Issuer
+    /// URL (https, or http on a loopback host), a client id and a client secret.
+    /// </summary>
+    /// <param name="configuration">The plugin configuration.</param>
+    /// <returns><c>true</c> when an OIDC Login can start.</returns>
+    public static bool IsConfigured(PluginConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return TryGetSettings(configuration, out _, out _);
+    }
+
+    /// <summary>
+    /// Starts an OIDC Login for a request already on the Public Jellyfin URL's host.
     /// </summary>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>The redirect and flow cookie, or a failure.</returns>
-    public async Task<StartResult> StartAsync(CancellationToken cancellationToken)
+    public Task<StartResult> StartAsync(CancellationToken cancellationToken) => StartAsync(new StartRequest(null), cancellationToken);
+
+    /// <summary>
+    /// Starts an OIDC Login: a redirect to the Identity Provider's authorization endpoint plus the flow cookie. A
+    /// request on another host is first sent to Start on the Public Jellyfin URL's host, where the Identity Provider
+    /// returns to and so where the flow cookie must be set.
+    /// </summary>
+    /// <param name="request">The browser's request.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The redirect and flow cookie, a redirect to the public host, or a failure.</returns>
+    public async Task<StartResult> StartAsync(StartRequest request, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var configuration = _configuration();
-        if (!TryGetHttpUrl(configuration.PublicJellyfinUrl, out var publicUrl)
-            || !TryGetHttpUrl(configuration.IssuerUrl, out var issuer)
-            || string.IsNullOrEmpty(configuration.ClientId)
-            || string.IsNullOrEmpty(configuration.ClientSecret))
+        if (!TryGetSettings(configuration, out var publicUrl, out var issuer))
         {
-            return Fail(new LoginFailure(FailureCategory.Failed, "The Plugin is not configured: Public Jellyfin URL, Issuer URL, client id and client secret are required."));
+            return StartResult.Fail(Log(NotConfigured));
         }
 
-        OpenIdConnectConfiguration discovery;
-        try
+        // Once only: a proxy that rewrites Host would otherwise loop. The target is the configured URL, so this is
+        // no open redirect.
+        if (request.Host is not null && !request.RedirectedToPublicHost && !IsHost(request.Host, publicUrl))
         {
-            discovery = await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException e)
-        {
-            return Fail(new LoginFailure(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}"));
+            return StartResult.RedirectToPublicHost(new Uri(OidcLoginEndpoints.Url(configuration, "Start?" + RedirectedToPublicHostParameter + "=true")));
         }
 
-        if (string.IsNullOrEmpty(discovery.AuthorizationEndpoint))
+        var (discovery, discoveryFailure) = await GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
+        if (discoveryFailure is not null)
         {
-            return Fail(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no authorization_endpoint."));
+            return StartResult.Fail(Log(discoveryFailure));
+        }
+
+        if (string.IsNullOrEmpty(discovery!.AuthorizationEndpoint))
+        {
+            return StartResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no authorization_endpoint.") { Level = LogLevel.Error }));
         }
 
         var flow = new FlowState(RandomToken(), RandomToken(), RandomToken(), _clock.GetUtcNow() + FlowLifetime);
@@ -85,7 +146,7 @@ public sealed partial class OidcLoginService
         {
             ["response_type"] = "code",
             ["client_id"] = configuration.ClientId,
-            ["redirect_uri"] = configuration.PublicJellyfinUrl.TrimEnd('/') + "/OidcLogin/Callback",
+            ["redirect_uri"] = CallbackUrl(configuration),
             ["scope"] = configuration.Scopes,
             ["state"] = flow.State,
             ["nonce"] = flow.Nonce,
@@ -93,28 +154,357 @@ public sealed partial class OidcLoginService
             ["code_challenge_method"] = "S256",
         });
 
-        var secure = publicUrl.Scheme == Uri.UriSchemeHttps;
-        var cookie = new IssuedCookie(
-            secure ? FlowCookieProtector.SecureCookieName : FlowCookieProtector.InsecureCookieName,
-            _flowCookie.Protect(flow),
-            new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
-        return StartResult.Redirect(new Uri(authorizationUrl), cookie);
+        return StartResult.Redirect(new Uri(authorizationUrl), FlowCookie(publicUrl, _flowCookie.Protect(flow)));
+    }
+
+    /// <summary>
+    /// Completes the Identity Provider leg: checks the flow, redeems the code, validates the ID token, resolves the
+    /// Subject to a Jellyfin user (provisioning one if it has no Linked Identity) and mints a handoff code.
+    /// </summary>
+    /// <param name="query">The callback query.</param>
+    /// <param name="flowCookie">The flow cookie value, if the browser sent one.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A handoff code for Complete, or a failure.</returns>
+    public async Task<CallbackResult> CallbackAsync(CallbackQuery query, string? flowCookie, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var configuration = _configuration();
+        if (!TryGetSettings(configuration, out _, out var issuer))
+        {
+            return CallbackResult.Fail(Log(NotConfigured));
+        }
+
+        var flow = flowCookie is null ? null : _flowCookie.Unprotect(flowCookie);
+        if (flow is null || flow.ExpiresAt <= _clock.GetUtcNow())
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The flow cookie is missing, invalid or expired.")));
+        }
+
+        if (!string.Equals(query.State, flow.State, StringComparison.Ordinal))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The callback state doesn't match the flow cookie.")));
+        }
+
+        // RFC 9207: on success and error alike. Discovery's issuer must equal the Issuer URL exactly, so this is it.
+        if (query.Iss is not null && !string.Equals(query.Iss, issuer.OriginalString, StringComparison.Ordinal))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"The callback's iss {LogText.Quote(query.Iss, 256)} isn't the Issuer URL.")));
+        }
+
+        // Discovery is cached since Start; it says whether iss is required.
+        var (discovery, discoveryFailure) = await GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false);
+        if (discoveryFailure is not null)
+        {
+            // An error response grants nothing, so it is still reported as what it is: a person who cancelled is
+            // Cancelled even while the Identity Provider can't be reached.
+            return CallbackResult.Fail(Log(query.Error is null ? discoveryFailure : IdentityProviderError(query.Error, query.ErrorDescription)));
+        }
+
+        // An Identity Provider that advertises iss must send it, or a mix-up attacker could simply leave it out.
+        if (query.Iss is null && discovery!.AuthorizationResponseIssParameterSupported)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no iss, though discovery advertises authorization_response_iss_parameter_supported.")));
+        }
+
+        // Only after the state check: an unbound error response could otherwise be planted on someone's login.
+        if (query.Error is not null)
+        {
+            return CallbackResult.Fail(Log(IdentityProviderError(query.Error, query.ErrorDescription)));
+        }
+
+        if (string.IsNullOrEmpty(query.Code))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The callback has no authorization code.")));
+        }
+
+        if (!Uri.TryCreate(discovery!.TokenEndpoint, UriKind.Absolute, out var tokenEndpoint))
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Discovery from {issuer} has no token_endpoint.") { Level = LogLevel.Error }));
+        }
+
+        string rawIdToken;
+        try
+        {
+            rawIdToken = await _identityProvider.RedeemCodeAsync(
+                tokenEndpoint,
+                new CodeRedemption(query.Code, CallbackUrl(configuration), flow.CodeVerifier, configuration.ClientId, configuration.ClientSecret),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException e)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Unavailable, $"The token endpoint {tokenEndpoint} could not be reached: {e.Message}")));
+        }
+        catch (IdentityProviderException e)
+        {
+            // Usually the client secret or redirect URI, which only an admin can fix.
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, e.Message) { Level = LogLevel.Error }));
+        }
+
+        JsonWebToken idToken;
+        try
+        {
+            idToken = await _identityProvider.ValidateIdTokenAsync(rawIdToken, issuer, discovery, configuration.ClientId, flow.Nonce, _clock, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IdentityProviderException e)
+        {
+            return CallbackResult.Fail(Log(new LoginFailure(FailureCategory.Failed, e.Message)));
+        }
+        catch (InvalidOperationException e)
+        {
+            return CallbackResult.Fail(Log(DiscoveryUnavailable(issuer, e)));
+        }
+
+        // Before resolving, so a refused person is never provisioned or linked.
+        if (AccessCheck.Refusal(idToken, configuration) is { } refusal)
+        {
+            return CallbackResult.Fail(Log(refusal));
+        }
+
+        var (user, failure) = await _users.ResolveAsync(idToken, configuration).ConfigureAwait(false);
+        if (failure is not null)
+        {
+            return CallbackResult.Fail(Log(failure));
+        }
+
+        // The code travels in the fragment, so it never reaches a server log or a Referer header. The groups go
+        // along so Admin Group sync runs only once Complete lets the login through.
+        var handoffCode = _handoffCodes.Mint(user!.Id, flowCookie!, IdTokenClaims.TryGetStrings(idToken, configuration.GroupsClaim, out var groups) ? groups : null);
+        return CallbackResult.Handoff(new Uri(OidcLoginEndpoints.Url(configuration, "Complete#code=" + handoffCode)));
+    }
+
+    /// <summary>
+    /// Completes an OIDC Login: checks the request came from the Complete page, consumes the handoff code with the
+    /// flow cookie it was minted for, refuses a user Jellyfin wouldn't let sign in, creates a Jellyfin session as
+    /// jellyfin-web would, and records the login on the user's link.
+    /// </summary>
+    /// <param name="request">The Complete page's POST.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The Jellyfin session and the cleared flow cookie, or a failure.</returns>
+    public async Task<CompleteResult> CompleteAsync(CompleteRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var configuration = _configuration();
+        if (!TryGetSettings(configuration, out var publicUrl, out _))
+        {
+            return CompleteResult.Fail(Log(NotConfigured));
+        }
+
+        // Checked before the code is touched, so a forged cross-site request can't use up someone's code.
+        if (!IsOrigin(request.Origin, publicUrl))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request didn't come from the Public Jellyfin URL's origin.")));
+        }
+
+        if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
+            || !string.Equals(contentType.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request isn't JSON.")));
+        }
+
+        if (!TryReadCompleteBody(request.Body, out var handoffCode, out var deviceId))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request has no code or deviceId.")));
+        }
+
+        if (!DeviceIdFormat().IsMatch(deviceId))
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, "The Complete request's device id is malformed.")));
+        }
+
+        if (request.FlowCookie is null || _handoffCodes.Consume(handoffCode, request.FlowCookie) is not { } handoff)
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, "The handoff code is unknown, used, expired or presented without its flow cookie.")));
+        }
+
+        if (_userManager.GetUserById(handoff.UserId) is not { } user)
+        {
+            // Retrying resolves the Subject afresh: to a new user, or to whatever its settings now say.
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Expired, $"Jellyfin user {handoff.UserId} was deleted during the login.")));
+        }
+
+        if (AccessCheck.Refusal(user, request.FromLocalNetwork) is { } refusal)
+        {
+            return CompleteResult.Fail(Log(refusal));
+        }
+
+        // Only now, so a refused or abandoned login never changes the user's rights.
+        await _users.SyncAdminGroupAsync(user, handoff.Groups, configuration, cancellationToken).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        AuthenticationResult session;
+        try
+        {
+            session = await _sessionManager.AuthenticateDirect(new AuthenticationRequest
+            {
+                UserId = user.Id,
+                Username = user.Username,
+                App = JellyfinWebClient.App,
+                AppVersion = _webClient.AppVersion,
+                DeviceId = deviceId,
+                DeviceName = JellyfinWebClient.DeviceName(request.UserAgent),
+                RemoteEndPoint = request.RemoteEndPoint,
+            }).ConfigureAwait(false);
+        }
+        catch (SecurityException e)
+        {
+            return CompleteResult.Fail(Log(new LoginFailure(FailureCategory.Failed, $"Jellyfin refused a session for user {user.Id}: {e.Message}")));
+        }
+
+        _linkedIdentities.RecordLogin(user.Id, _clock.GetUtcNow());
+        var clearedFlowCookie = FlowCookie(publicUrl, string.Empty);
+        clearedFlowCookie.Options.Expires = DateTimeOffset.UnixEpoch;
+        return CompleteResult.SignedIn(new JellyfinSession(session.AccessToken, user.Id, session.ServerId), clearedFlowCookie);
+    }
+
+    /// <inheritdoc />
+    public void Dispose() => _users.Dispose();
+
+    /// <summary>
+    /// The Identity Provider's <c>error</c> response: <c>access_denied</c> is the person cancelling, anything else is
+    /// usually a setup problem.
+    /// </summary>
+    private static LoginFailure IdentityProviderError(string error, string? description)
+    {
+        var cause = $"The Identity Provider answered with error {LogText.Quote(error, 64)}: {LogText.Quote(description ?? "no description", 256)}";
+        return error == "access_denied"
+            ? new LoginFailure(FailureCategory.Cancelled, cause)
+            : new LoginFailure(FailureCategory.Failed, cause) { Level = LogLevel.Error };
+    }
+
+    private static LoginFailure DiscoveryUnavailable(Uri issuer, InvalidOperationException e)
+        => new(FailureCategory.Unavailable, $"Discovery could not be fetched from {issuer}: {e.InnerException?.Message ?? e.Message}");
+
+    /// <summary>
+    /// Fetches discovery, cached by <see cref="IdentityProviderClient"/>: Unavailable when it can't be reached,
+    /// Failed when it isn't valid for the Issuer URL.
+    /// </summary>
+    private async Task<(OpenIdConnectConfiguration? Discovery, LoginFailure? Failure)> GetDiscoveryAsync(Uri issuer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await _identityProvider.GetDiscoveryAsync(issuer, cancellationToken).ConfigureAwait(false), null);
+        }
+        catch (InvalidOperationException e)
+        {
+            return (null, DiscoveryUnavailable(issuer, e));
+        }
+        catch (IdentityProviderException e)
+        {
+            return (null, new LoginFailure(FailureCategory.Failed, e.Message) { Level = LogLevel.Error });
+        }
+    }
+
+    private static bool TryGetSettings(PluginConfiguration configuration, [NotNullWhen(true)] out Uri? publicUrl, [NotNullWhen(true)] out Uri? issuer)
+    {
+        issuer = null;
+        return TryGetHttpUrl(configuration.PublicJellyfinUrl, out publicUrl)
+            && TryGetHttpUrl(configuration.IssuerUrl, out issuer)
+            && IssuerUrl.IsAllowed(issuer)
+            && !string.IsNullOrEmpty(configuration.ClientId)
+            && !string.IsNullOrEmpty(configuration.ClientSecret);
     }
 
     private static bool TryGetHttpUrl(string value, [NotNullWhen(true)] out Uri? url)
         => Uri.TryCreate(value, UriKind.Absolute, out url) && (url.Scheme == Uri.UriSchemeHttps || url.Scheme == Uri.UriSchemeHttp);
 
     /// <summary>
-    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c> and the PKCE verifier.
+    /// The flow cookie: <c>__Host-</c> and <c>Secure</c> when the Public Jellyfin URL is https, never derived from
+    /// the request.
     /// </summary>
-    private static string RandomToken() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
-
-    private StartResult Fail(LoginFailure failure)
+    private static IssuedCookie FlowCookie(Uri publicUrl, string value)
     {
-        LogFailure(failure.Category, failure.Cause);
-        return StartResult.Fail(failure);
+        var secure = publicUrl.Scheme == Uri.UriSchemeHttps;
+        return new IssuedCookie(
+            secure ? FlowCookieProtector.SecureCookieName : FlowCookieProtector.InsecureCookieName,
+            value,
+            new CookieOptions { Path = "/", HttpOnly = true, Secure = secure, SameSite = SameSiteMode.Lax });
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "OIDC Login failed ({Category}): {Cause}")]
-    private partial void LogFailure(FailureCategory category, string cause);
+    /// <summary>
+    /// Whether a <c>Host</c> header names the Public Jellyfin URL's host and port. Its scheme isn't compared: behind
+    /// a TLS-terminating proxy the request is plain http.
+    /// </summary>
+    private static bool IsHost(string host, Uri publicUrl)
+        => Uri.TryCreate(publicUrl.Scheme + "://" + host, UriKind.Absolute, out var requestUrl)
+            && string.Equals(requestUrl.IdnHost, publicUrl.IdnHost, StringComparison.OrdinalIgnoreCase)
+            && requestUrl.Port == publicUrl.Port;
+
+    private static bool IsOrigin(string? origin, Uri publicUrl)
+        => Uri.TryCreate(origin, UriKind.Absolute, out var originUrl)
+            && string.Equals(originUrl.GetLeftPart(UriPartial.Authority), publicUrl.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryReadCompleteBody(string? body, [NotNullWhen(true)] out string? handoffCode, [NotNullWhen(true)] out string? deviceId)
+    {
+        handoffCode = null;
+        deviceId = null;
+        try
+        {
+            using var json = JsonDocument.Parse(body ?? string.Empty);
+            if (json.RootElement.ValueKind == JsonValueKind.Object
+                && json.RootElement.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String
+                && json.RootElement.TryGetProperty("deviceId", out var device) && device.ValueKind == JsonValueKind.String)
+            {
+                handoffCode = code.GetString()!;
+                deviceId = device.GetString()!;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The device ids jellyfin-web generates (base64 with <c>=</c> turned into <c>1</c>, or a timestamp), plus
+    /// base64url. Nothing that could break Jellyfin's <c>Authorization</c> header or the Devices page.
+    /// </summary>
+    [GeneratedRegex("^[A-Za-z0-9+/=_-]{1,512}$")]
+    private static partial Regex DeviceIdFormat();
+
+    private static string CallbackUrl(PluginConfiguration configuration) => OidcLoginEndpoints.Url(configuration, "Callback");
+
+    /// <summary>
+    /// Generates 32 random bytes, base64url-encoded: used for <c>state</c>, <c>nonce</c>, the PKCE verifier and
+    /// provisioned users' passwords.
+    /// </summary>
+    /// <returns>The token.</returns>
+    internal static string RandomToken() => Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
+
+    /// <summary>
+    /// A reference code: 8 characters from an alphabet without look-alikes, enough to find one log entry.
+    /// </summary>
+    private static string NewReference() => RandomNumberGenerator.GetString("0123456789ABCDEFGHJKMNPQRSTVWXYZ", 8);
+
+    /// <summary>
+    /// Writes the failure's one log entry, tagged with a new reference code, and returns it carrying that code.
+    /// </summary>
+    private LoginFailure Log(LoginFailure failure)
+    {
+        failure = failure with { Reference = NewReference() };
+        if (failure.Subject is null)
+        {
+            LogFailure(failure.Level, failure.Category, failure.Reference, failure.Cause);
+        }
+        else
+        {
+            // Both come from a valid ID token, but are still the Identity Provider's text.
+            LogFailureForSubject(
+                failure.Level,
+                failure.Category,
+                failure.Reference,
+                failure.Cause,
+                LogText.Quote(failure.Subject, 255),
+                failure.Username is null ? "unknown" : LogText.Quote(failure.Username, 255));
+        }
+
+        return failure;
+    }
+
+    [LoggerMessage(Message = "OIDC Login {Category}, reference {Reference}: {Cause}")]
+    private partial void LogFailure(LogLevel level, FailureCategory category, string reference, string cause);
+
+    [LoggerMessage(Message = "OIDC Login {Category}, reference {Reference}: {Cause} Subject: {Subject}, username claim: {Username}.")]
+    private partial void LogFailureForSubject(LogLevel level, FailureCategory category, string reference, string cause, string subject, string username);
 }

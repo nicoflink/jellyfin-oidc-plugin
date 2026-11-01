@@ -1,0 +1,124 @@
+name: Release
+
+# One workflow cuts every release. The version comes only from git tags vMAJOR.MINOR.PATCH;
+# nothing here commits to main (only the tag, the GitHub Release and gh-pages change).
+on:
+  push:
+    branches: [main]
+    paths: [build.yaml]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  JPRM_VERSION: "1.1.0"
+  MANIFEST_URL: https://nicoflink.github.io/jellyfin-oidc-plugin/manifest.json
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          BUMP: ${{ inputs.bump }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            .github/scripts/release-plan.sh dispatch "$BUMP" | tee -a "$GITHUB_OUTPUT"
+          else
+            # Releases automatically only when targetAbi changed (a Jellyfin bump).
+            .github/scripts/release-plan.sh push "$BEFORE" "$AFTER" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release notes
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          NOTES: ${{ steps.plan.outputs.notes }}
+        run: |
+          if [[ -n "$NOTES" ]]; then
+            printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+              -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body > "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+          # Only the runner's copy of build.yaml changes; it is never committed.
+          .github/scripts/release-plan.sh changelog "$RUNNER_TEMP/notes.md"
+
+      - uses: actions/setup-dotnet@v6
+        if: steps.plan.outputs.release == 'true'
+        with:
+          global-json-file: global.json
+
+      - name: Install jprm
+        if: steps.plan.outputs.release == 'true'
+        run: pipx install "jprm==$JPRM_VERSION"
+
+      - name: Build plugin zip
+        id: build
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          mkdir -p artifacts/release
+          zip="$(jprm --verbosity=debug plugin build . --output artifacts/release --version "$VERSION" --dotnet-configuration Release)"
+          ( cd "$(dirname "$zip")" && md5sum "$(basename "$zip")" > "$(basename "$zip").md5" )
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$zip")" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          ZIP: ${{ steps.build.outputs.zip }}
+        run: |
+          gh release create "$TAG" "$ZIP" "$ZIP.md5" \
+            --target "$GITHUB_SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Add the release to manifest.json on gh-pages
+        if: steps.plan.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          ZIP: ${{ steps.build.outputs.zip }}
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          pages="$RUNNER_TEMP/gh-pages"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            git worktree add -B gh-pages "$pages" origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages "$pages"
+          fi
+          [[ -f "$pages/manifest.json" ]] || jprm repo init "$pages"
+          touch "$pages/.nojekyll"
+          jprm repo add "$pages/manifest.json" "$ZIP" \
+            --plugin-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$NAME"
+          git -C "$pages" add manifest.json .nojekyll
+          git -C "$pages" commit -m "Add $TAG to manifest.json"
+          git -C "$pages" push origin gh-pages
+          echo "Plugin repository: $MANIFEST_URL" >> "$GITHUB_STEP_SUMMARY"

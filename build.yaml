@@ -10,6 +10,8 @@ description: >
   become the way into Jellyfin). Local Login keeps working.
 category: "Authentication"
 owner: "nicoflink"
+# Filled in by the release workflow with the release notes.
+changelog: ""
 artifacts:
 - "Jellyfin.Plugin.OidcLogin.dll"
 - "Microsoft.Bcl.Cryptography.dll"

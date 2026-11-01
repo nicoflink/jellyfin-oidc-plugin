@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
+      - name: Release plan tests
+        run: .github/scripts/release-plan.test.sh
       - name: Build
         run: dotnet build Jellyfin.Plugin.OidcLogin.slnx -c Release
       - name: Unit tests

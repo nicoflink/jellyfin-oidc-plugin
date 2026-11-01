@@ -1,7 +1,14 @@
 using System;
+using Jellyfin.Data.Events.Users;
+using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
+using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Events;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Controller.Session;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -18,12 +25,33 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.TryAddSingleton(TimeProvider.System);
         serviceCollection.AddSingleton<IdentityProviderClient>();
+        serviceCollection.AddSingleton<ConnectionTester>();
         serviceCollection.AddSingleton<FlowCookieProtector>();
+        serviceCollection.AddSingleton<HandoffCodes>();
+
+        // Resolved after the Plugin is loaded, so its data folder is known.
+        serviceCollection.AddSingleton(_ => new LinkedIdentityStore(Plugin.Instance!.DataFolderPath));
+        serviceCollection.AddSingleton(services => new LinkedIdentityAdmin(
+            services.GetRequiredService<LinkedIdentityStore>(),
+            services.GetRequiredService<IUserManager>(),
+            services.GetRequiredService<TimeProvider>(),
+            () => Plugin.Instance!.Configuration));
         serviceCollection.AddSingleton(services => new OidcLoginService(
             services.GetRequiredService<IdentityProviderClient>(),
             services.GetRequiredService<FlowCookieProtector>(),
+            services.GetRequiredService<IUserManager>(),
+            services.GetRequiredService<ISessionManager>(),
+            services.GetRequiredService<LinkedIdentityStore>(),
+            services.GetRequiredService<HandoffCodes>(),
             services.GetRequiredService<TimeProvider>(),
             () => Plugin.Instance!.Configuration,
+            new JellyfinWebClient(applicationHost.ApplicationVersionString),
             services.GetRequiredService<ILogger<OidcLoginService>>()));
+
+        // Jellyfin resolves event consumers from a scope per event; the store they get is the singleton.
+        serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedConsumer>();
+
+        // Runs for every MVC result; it acts only on the anonymous GET /Branding/Configuration.
+        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add(new BrandingFilter(() => Plugin.Instance!.Configuration)));
     }
 }
