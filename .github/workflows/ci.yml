@@ -39,7 +39,7 @@ jobs:
             || { echo "::error::build.yaml artifacts differ from the published assemblies"; exit 1; }
 
   e2e:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
     steps:
