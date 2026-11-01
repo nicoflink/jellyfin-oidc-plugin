@@ -1,0 +1,20 @@
+[
+    {
+        "guid": "d34c4da5-d189-4677-b1a5-b1ea1d0f1dbd",
+        "name": "OIDC Login",
+        "description": "Lets people sign in to the Jellyfin web UI through a single external OpenID Connect Identity Provider (tested against PocketID, so passkeys become the way into Jellyfin). Local Login keeps working.\n",
+        "overview": "Sign in to Jellyfin through an OpenID Connect Identity Provider",
+        "owner": "nicoflink",
+        "category": "Authentication",
+        "versions": [
+            {
+                "version": "0.1.0.0",
+                "changelog": "## What's Changed\n* OIDC Login for Jellyfin 12.x (spec #19) by @nicoflink in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/35\n* Update dependency ubuntu to v26 by @renovate[bot] in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/36\n\n## New Contributors\n* @nicoflink made their first contribution in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/35\n* @renovate[bot] made their first contribution in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/36\n\n**Full Changelog**: https://github.com/nicoflink/jellyfin-oidc-plugin/commits/v0.1.0\n",
+                "targetAbi": "12.4.0.0",
+                "sourceUrl": "https://github.com/nicoflink/jellyfin-oidc-plugin/releases/download/v0.1.0/oidc-login_0.1.0.0.zip",
+                "checksum": "8d29ebaa2b64a583972243a51b2e1921",
+                "timestamp": "2026-11-01T21:48:12Z"
+            }
+        ]
+    }
+]
