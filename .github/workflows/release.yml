@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -68,7 +68,7 @@ jobs:
           # Only the runner's copy of build.yaml changes; it is never committed.
           .github/scripts/release-plan.sh changelog "$RUNNER_TEMP/notes.md"
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         if: steps.plan.outputs.release == 'true'
         with:
           global-json-file: global.json

@@ -12,8 +12,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
       - name: Release plan tests
@@ -43,8 +43,8 @@ jobs:
     env:
       E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
       - name: Build
@@ -55,7 +55,7 @@ jobs:
         run: dotnet test --project tests/Jellyfin.Plugin.OidcLogin.E2ETests -c Release --no-build
       - name: Upload Playwright traces and container logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-artifacts
           path: ${{ env.E2E_ARTIFACTS_DIR }}
