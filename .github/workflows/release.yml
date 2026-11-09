@@ -68,7 +68,7 @@ jobs:
           # Only the runner's copy of build.yaml changes; it is never committed.
           .github/scripts/release-plan.sh changelog "$RUNNER_TEMP/notes.md"
 
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         if: steps.plan.outputs.release == 'true'
         with:
           global-json-file: global.json
