@@ -8,6 +8,14 @@
         "category": "Authentication",
         "versions": [
             {
+                "version": "0.2.1.0",
+                "changelog": "## What's Changed\n* OIDC Login works where jellyfin-web's \"Remember me\" was turned off (#50) by @nicoflink in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/51\n\n\n**Full Changelog**: https://github.com/nicoflink/jellyfin-oidc-plugin/compare/v0.2.0...v0.2.1\n",
+                "targetAbi": "12.4.0.0",
+                "sourceUrl": "https://github.com/nicoflink/jellyfin-oidc-plugin/releases/download/v0.2.1/oidc-login_0.2.1.0.zip",
+                "checksum": "868c39b0edf2b9e75512da8b9632b4cc",
+                "timestamp": "2026-11-18T22:20:58Z"
+            },
+            {
                 "version": "0.2.0.0",
                 "changelog": "## What's Changed\n* Pin dependencies by @renovate[bot] in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/38\n* Update ghcr.io/pocket-id/pocket-id Docker tag to v2.19.2 by @renovate[bot] in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/39\n* Update actions/setup-dotnet digest to 0f4a354 by @renovate[bot] in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/40\n* Update ghcr.io/pocket-id/pocket-id Docker tag to v2.19.3 by @renovate[bot] in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/42\n* Glossary and ADR for the Local Login Policy by @nicoflink in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/48\n* Local Login Policy: restrict or disable password sign-in (#43) by @nicoflink in https://github.com/nicoflink/jellyfin-oidc-plugin/pull/49\n\n\n**Full Changelog**: https://github.com/nicoflink/jellyfin-oidc-plugin/compare/v0.1.0...v0.2.0\n",
                 "targetAbi": "12.4.0.0",
