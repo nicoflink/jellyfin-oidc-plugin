@@ -13,6 +13,8 @@
     #OidcLoginConfigPage .oidc-table th, #OidcLoginConfigPage .oidc-table td { text-align: left; padding: .4em .6em; border-bottom: 1px solid rgba(128, 128, 128, .35); }
     #OidcLoginConfigPage .oidc-table td:first-child { word-break: break-all; }
     #OidcLoginConfigPage .oidc-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    #OidcLoginConfigPage .oidc-choice { display: flex; gap: .75em; align-items: baseline; margin: .6em 0; cursor: pointer; }
+    #OidcLoginConfigPage .oidc-choice .fieldDescription { margin: .2em 0 0; }
     #OidcLoginConfigPage [hidden] { display: none !important; }
   </style>
   <div data-role="content">
@@ -20,7 +22,7 @@
       <form class="oidcConfigForm">
         <div class="verticalSection">
           <h2 class="sectionTitle">OIDC Login</h2>
-          <p>Let people sign in to Jellyfin's web UI through your OpenID Connect Identity Provider. Work through the steps in order; Local Login keeps working throughout.</p>
+          <p>Let people sign in to Jellyfin's web UI through your OpenID Connect Identity Provider. Work through the steps in order; Local Login keeps working throughout unless you restrict it in step 5.</p>
         </div>
 
         <div class="oidc-step" data-step="1">
@@ -125,6 +127,28 @@
           </div>
         </div>
 
+        <div class="oidc-step" data-step="5">
+          <h2><span class="oidc-badge">5</span><span>Local Login</span></h2>
+          <p>Where Jellyfin's own username-and-password sign-in is accepted. OIDC Login and Quick Connect always work. The setting takes effect once steps 1 and 2 are complete.</p>
+          <fieldset id="oidcLocalLoginPolicy" style="border: 0; padding: 0; margin: 0;">
+            <legend class="oidc-visually-hidden">Local Login Policy</legend>
+            <label class="oidc-choice">
+              <input type="radio" name="oidcLocalLoginPolicy" value="Allowed" />
+              <span><b>Allowed</b><span class="fieldDescription" style="display: block;">Password sign-in works everywhere.</span></span>
+            </label>
+            <label class="oidc-choice">
+              <input type="radio" name="oidcLocalLoginPolicy" value="LocalNetworkOnly" />
+              <span><b>Local network only</b><span class="fieldDescription" style="display: block;">Password sign-in works only from the LAN networks set in Jellyfin's networking settings.</span></span>
+            </label>
+            <label class="oidc-choice">
+              <input type="radio" name="oidcLocalLoginPolicy" value="Disabled" />
+              <span><b>Disabled</b><span class="fieldDescription" style="display: block;">Password sign-in is refused everywhere. Apps sign in with Quick Connect.</span></span>
+            </label>
+          </fieldset>
+          <div id="oidcLocalLoginWarnings"></div>
+          <p class="fieldDescription">Locked out? Disabling or removing the Plugin restores Local Login immediately.</p>
+        </div>
+
         <div>
           <button is="emby-button" type="submit" class="raised button-submit block"><span>Save</span></button>
           <div id="oidcSaveResult" role="status"></div>
@@ -170,6 +194,7 @@
       var savedIssuerUrl = '';
       var clientSecretSet = false;
       var linkedIdentityCount = 0;
+      var lockout = { unlinkedUsers: { count: 0, administrators: 0 }, quickConnectEnabled: true, proxyNotTrusted: false };
 
       function field(id) { return page.querySelector('#' + id); }
       function value(id) { return field(id).value.trim(); }
@@ -215,6 +240,32 @@
         return names;
       }
 
+      function localLoginPolicy() {
+        var checked = page.querySelector('input[name="oidcLocalLoginPolicy"]:checked');
+        return checked ? checked.value : 'Allowed';
+      }
+
+      // Inform, never block: the admin may restrict Local Login deliberately, for example during an attack.
+      function lockoutWarnings() {
+        var policy = localLoginPolicy();
+        if (policy === 'Allowed') return [];
+        var warnings = [];
+        var unlinked = lockout.unlinkedUsers;
+        if (unlinked.count > 0) {
+          warnings.push(unlinked.count + ' enabled Jellyfin ' + (unlinked.count === 1 ? 'user has' : 'users have') + ' no Linked Identity and can only sign in with a password.');
+        }
+        if (unlinked.administrators > 0) {
+          warnings.push(unlinked.administrators + ' of them ' + (unlinked.administrators === 1 ? 'is an administrator' : 'are administrators') + ': make sure you don\'t lock yourself out.');
+        }
+        if (!lockout.quickConnectEnabled) {
+          warnings.push('Quick Connect is switched off in Jellyfin, so native and TV apps can\'t sign in without a password.');
+        }
+        if (policy === 'LocalNetworkOnly' && lockout.proxyNotTrusted) {
+          warnings.push('This page came through a reverse proxy that Jellyfin doesn\'t trust, so every request looks local. Add the proxy to Known Proxies in Jellyfin\'s networking settings.');
+        }
+        return warnings;
+      }
+
       function issuerChangeOrphansLinks() {
         return linkedIdentityCount > 0 && value('oidcIssuerUrl') !== savedIssuerUrl;
       }
@@ -233,7 +284,8 @@
           1: gaps.indexOf('Public Jellyfin URL') < 0,
           2: gaps.every(function (gap) { return gap === 'Public Jellyfin URL'; }),
           3: true,
-          4: gaps.length === 0 && field('oidcShowSignInButton').checked
+          4: gaps.length === 0 && field('oidcShowSignInButton').checked,
+          5: true
         };
         page.querySelectorAll('.oidc-step').forEach(function (step) {
           step.classList.toggle('oidc-done', stepDone[step.getAttribute('data-step')]);
@@ -243,6 +295,16 @@
         show('oidcButtonMissing', gaps.length ? 'Finish steps 1 and 2 first, missing: ' + gaps.join(', ') + '.' : '', 'oidc-warning');
         show('oidcIssuerWarning', issuerChangeOrphansLinks() ? orphanWarning() : '', 'oidc-warning');
         field('oidcClientSecretStatus').textContent = clientSecretSet ? 'set' : 'not set';
+
+        var warnings = field('oidcLocalLoginWarnings');
+        warnings.textContent = '';
+        lockoutWarnings().forEach(function (warning) {
+          var line = document.createElement('p');
+          line.className = 'oidc-warning';
+          line.setAttribute('role', 'alert');
+          line.textContent = warning;
+          warnings.appendChild(line);
+        });
       }
 
       function load() {
@@ -261,6 +323,10 @@
           field('oidcAdminGroup').value = c.adminGroup;
           field('oidcRequiredAmr').value = c.requiredAmr;
           field('oidcShowSignInButton').checked = c.showSignInButton;
+          page.querySelectorAll('input[name="oidcLocalLoginPolicy"]').forEach(function (choice) {
+            choice.checked = choice.value === c.localLoginPolicy;
+          });
+          lockout = { unlinkedUsers: result.unlinkedUsers, quickConnectEnabled: result.quickConnectEnabled, proxyNotTrusted: result.proxyNotTrusted };
           savedIssuerUrl = c.issuerUrl;
           clientSecretSet = result.clientSecretSet;
           linkedIdentityCount = result.linkedIdentityCount;
@@ -377,7 +443,8 @@
             requiredGroup: value('oidcRequiredGroup'),
             adminGroup: value('oidcAdminGroup'),
             requiredAmr: value('oidcRequiredAmr'),
-            showSignInButton: field('oidcShowSignInButton').checked
+            showSignInButton: field('oidcShowSignInButton').checked,
+            localLoginPolicy: localLoginPolicy()
           },
           clientSecret: field('oidcClientSecret').value
         };

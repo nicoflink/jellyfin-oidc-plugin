@@ -14,6 +14,11 @@ internal sealed class JellyfinServer : IDisposable
 {
     private const string ClientAuthorization = "MediaBrowser Client=\"OidcLogin E2E\", Device=\"E2E\", DeviceId=\"oidclogin-e2e\", Version=\"1.0.0\"";
 
+    /// <summary>
+    /// A second device, like a native app: signing in on it doesn't end the sessions of <see cref="ClientAuthorization"/>.
+    /// </summary>
+    private const string AppAuthorization = "MediaBrowser Client=\"OidcLogin E2E App\", Device=\"E2E\", DeviceId=\"oidclogin-e2e-app\", Version=\"1.0.0\"";
+
     private readonly HttpClient _http;
 
     public JellyfinServer(Uri baseAddress)
@@ -64,6 +69,19 @@ internal sealed class JellyfinServer : IDisposable
     {
         var session = await PostAsync("Users/AuthenticateByName", new { Username = username, Pw = password }, cancellationToken);
         return session.GetProperty("AccessToken").GetString()!;
+    }
+
+    /// <summary>
+    /// Posts <paramref name="body"/> as an app on its own device and returns the response, whatever its status.
+    /// </summary>
+    public async Task<HttpResponseMessage> PostAsAppAsync(string path, object? body, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(path, UriKind.Relative))
+        {
+            Content = body is null ? null : JsonContent.Create(body),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", AppAuthorization);
+        return await _http.SendAsync(request, cancellationToken);
     }
 
     public async Task<JsonElement> GetAsync(string path, string accessToken, CancellationToken cancellationToken)

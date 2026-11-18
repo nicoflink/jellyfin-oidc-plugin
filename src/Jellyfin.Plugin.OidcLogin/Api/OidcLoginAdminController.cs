@@ -4,7 +4,10 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.Login;
+using MediaBrowser.Common.Net;
+using MediaBrowser.Controller.Configuration;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -19,26 +22,42 @@ namespace Jellyfin.Plugin.OidcLogin.Api;
 [Route("OidcLogin")]
 public class OidcLoginAdminController : ControllerBase
 {
+    private const string ForwardedForHeader = "X-Forwarded-For";
+
     private readonly ConnectionTester _connectionTester;
     private readonly LinkedIdentityAdmin _linkedIdentities;
+    private readonly IServerConfigurationManager _serverConfiguration;
+    private readonly Func<HttpContext, bool> _isLocal;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcLoginAdminController"/> class.
     /// </summary>
     /// <param name="connectionTester">Runs Test connection.</param>
     /// <param name="linkedIdentities">Lists, links and unlinks Linked Identities.</param>
-    public OidcLoginAdminController(ConnectionTester connectionTester, LinkedIdentityAdmin linkedIdentities)
+    /// <param name="serverConfiguration">Jellyfin's server configuration, which says whether Quick Connect is on.</param>
+    /// <param name="networkManager">Jellyfin's network manager, which knows its local networks.</param>
+    public OidcLoginAdminController(
+        ConnectionTester connectionTester,
+        LinkedIdentityAdmin linkedIdentities,
+        IServerConfigurationManager serverConfiguration,
+        INetworkManager networkManager)
     {
         _connectionTester = connectionTester;
         _linkedIdentities = linkedIdentities;
+        _serverConfiguration = serverConfiguration;
+        _isLocal = LocalNetwork.Classifier(networkManager);
     }
 
     private static Plugin Plugin => Plugin.Instance ?? throw new InvalidOperationException("The Plugin is not loaded.");
 
     /// <summary>
-    /// Gets the configuration without the client secret, which is only reported as set or not set.
+    /// Gets the configuration without the client secret, which is only reported as set or not set, and the facts
+    /// behind the Local Login Policy's lockout warnings.
     /// </summary>
-    /// <returns><c>configuration</c>, <c>clientSecretSet</c> and <c>linkedIdentityCount</c>.</returns>
+    /// <returns>
+    /// <c>configuration</c>, <c>clientSecretSet</c>, <c>linkedIdentityCount</c>, <c>unlinkedUsers</c> (<c>count</c>,
+    /// <c>administrators</c>), <c>quickConnectEnabled</c> and <c>proxyNotTrusted</c>.
+    /// </returns>
     [HttpGet("Configuration")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult GetConfiguration()
@@ -49,6 +68,11 @@ public class OidcLoginAdminController : ControllerBase
             configuration,
             clientSecretSet = !string.IsNullOrEmpty(configuration.ClientSecret),
             linkedIdentityCount = _linkedIdentities.List().Count,
+            unlinkedUsers = _linkedIdentities.CountUnlinkedUsers(),
+            quickConnectEnabled = _serverConfiguration.Configuration.QuickConnectAvailable,
+
+            // Jellyfin consumes X-Forwarded-For from a Known Proxy; left in place, the request's address is the proxy's.
+            proxyNotTrusted = Request.Headers.ContainsKey(ForwardedForHeader) && _isLocal(HttpContext),
         });
     }
 
@@ -72,7 +96,7 @@ public class OidcLoginAdminController : ControllerBase
             update = null;
         }
 
-        if (update?.Configuration is not { } configuration)
+        if (update?.Configuration is not { } configuration || !Enum.IsDefined(configuration.LocalLoginPolicy))
         {
             return BadRequest();
         }

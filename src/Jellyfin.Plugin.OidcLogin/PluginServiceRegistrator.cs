@@ -1,8 +1,10 @@
 using System;
 using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.Login;
 using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
+using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Library;
@@ -51,7 +53,20 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Jellyfin resolves event consumers from a scope per event; the store they get is the singleton.
         serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedConsumer>();
 
-        // Runs for every MVC result; it acts only on the anonymous GET /Branding/Configuration.
-        serviceCollection.Configure<MvcOptions>(options => options.Filters.Add(new BrandingFilter(() => Plugin.Instance!.Configuration)));
+        serviceCollection.AddSingleton(services => new BrandingFilter(
+            () => Plugin.Instance!.Configuration,
+            LocalNetwork.Classifier(services.GetRequiredService<INetworkManager>())));
+        serviceCollection.AddSingleton(services => new LocalLoginPolicyFilter(
+            () => Plugin.Instance!.Configuration,
+            LocalNetwork.Classifier(services.GetRequiredService<INetworkManager>()),
+            services.GetRequiredService<ILogger<LocalLoginPolicyFilter>>()));
+
+        // Both run for every MVC request. The Branding filter acts only on the anonymous GET /Branding/Configuration,
+        // the Local Login Policy filter only on Jellyfin's password login actions, before model binding reads the body.
+        serviceCollection.Configure<MvcOptions>(options =>
+        {
+            options.Filters.AddService<BrandingFilter>();
+            options.Filters.AddService<LocalLoginPolicyFilter>();
+        });
     }
 }

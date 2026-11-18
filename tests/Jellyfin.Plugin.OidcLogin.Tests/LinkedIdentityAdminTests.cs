@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
 using Microsoft.Extensions.Time.Testing;
@@ -143,6 +145,22 @@ public sealed class LinkedIdentityAdminTests : IDisposable
     }
 
     public void Dispose() => Directory.Delete(_dataFolder, recursive: true);
+
+    [Fact]
+    public void CountsEnabledUsersWithoutALinkedIdentityAndTheAdministratorsAmongThem()
+    {
+        var linked = _users.Add("alice");
+        _users.Add("bob");
+        _users.AddAdministrator("root");
+        var linkedAdministrator = _users.AddAdministrator("carol");
+        var disabledAdministrator = _users.AddAdministrator("dave");
+        disabledAdministrator.SetPermission(PermissionKind.IsDisabled, true);
+        var store = new LinkedIdentityStore(_dataFolder);
+        store.Add(new LinkedIdentity(StubIdentityProvider.Issuer, "sub-alice", linked.Id, LinkedAt, null));
+        store.Add(new LinkedIdentity(StubIdentityProvider.Issuer, "sub-carol", linkedAdministrator.Id, LinkedAt, null));
+
+        Assert.Equal(new UnlinkedUsers(2, 1), CreateAdmin().CountUnlinkedUsers());
+    }
 
     private LinkedIdentityAdmin CreateAdmin() => new(new LinkedIdentityStore(_dataFolder), _users.Manager, _clock, () => _configuration);
 }

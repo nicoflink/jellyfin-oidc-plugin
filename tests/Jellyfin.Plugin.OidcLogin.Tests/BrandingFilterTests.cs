@@ -25,6 +25,16 @@ public sealed class BrandingFilterTests
         + "margin:1.25em 0 0;padding:0.9em 1em;border:0;border-radius:0.2em;background:#00a4dc;color:#fff;font:inherit;"
         + "font-weight:600;cursor:pointer\">Sign in with PocketID</button></form>";
 
+    private const string Hint = "<p class=\"oidc-login-hint\" style=\"margin:1em 0 0;text-align:center;opacity:0.8\">"
+        + "Password sign-in is disabled. Use Quick Connect in apps.</p>";
+
+    /// <summary>
+    /// Hides jellyfin-web's manual login form, its "Manual Login" button and the user tiles, leaving the Quick
+    /// Connect button and the disclaimer.
+    /// </summary>
+    private const string HidePasswordLoginCss =
+        "#loginPage .manualLoginForm,#loginPage .visualLoginForm,#loginPage .btnManual{display:none!important}";
+
     private readonly PluginConfiguration _configuration = new()
     {
         PublicJellyfinUrl = "https://jellyfin.example.test/",
@@ -33,6 +43,8 @@ public sealed class BrandingFilterTests
         ClientSecret = "client-secret",
         ShowSignInButton = true,
     };
+
+    private bool _local;
 
     [Fact]
     public void AppendsSameTabFormButtonAfterTheAdminsTextForJellyfinWeb()
@@ -119,6 +131,74 @@ public sealed class BrandingFilterTests
         Assert.Equal(["Accept-Encoding", "Authorization"], httpContext.Response.Headers.Vary.ToArray());
     }
 
+    [Theory]
+    [InlineData(LocalLoginPolicy.Disabled, true)]
+    [InlineData(LocalLoginPolicy.Disabled, false)]
+    [InlineData(LocalLoginPolicy.LocalNetworkOnly, false)]
+    public void HidesThePasswordFormAndAddsTheHintBelowTheButtonWhenLocalLoginIsRefused(LocalLoginPolicy policy, bool local)
+    {
+        _configuration.LocalLoginPolicy = policy;
+        _local = local;
+
+        var branding = FilterBranding(JellyfinWeb, "Welcome home.");
+
+        Assert.Equal("Welcome home.\n\n" + Button + "\n\n" + Hint, branding.LoginDisclaimer);
+        Assert.Equal("body{}\n" + HidePasswordLoginCss, branding.CustomCss);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void HintAndCssStandAloneWithoutAdminContent(string? adminContent)
+    {
+        _configuration.LocalLoginPolicy = LocalLoginPolicy.Disabled;
+        _configuration.ShowSignInButton = false;
+
+        var branding = FilterBranding(JellyfinWeb, adminContent, customCss: adminContent);
+
+        Assert.Equal(Hint, branding.LoginDisclaimer);
+        Assert.Equal(HidePasswordLoginCss, branding.CustomCss);
+    }
+
+    [Theory]
+    [InlineData(LocalLoginPolicy.Allowed, false)]
+    [InlineData(LocalLoginPolicy.LocalNetworkOnly, true)]
+    public void LeavesTheCssAndButtonAloneWhenLocalLoginIsAccepted(LocalLoginPolicy policy, bool local)
+    {
+        _configuration.LocalLoginPolicy = policy;
+        _local = local;
+
+        var branding = FilterBranding(JellyfinWeb, "Welcome home.");
+
+        Assert.Equal("Welcome home.\n\n" + Button, branding.LoginDisclaimer);
+        Assert.Equal("body{}", branding.CustomCss);
+    }
+
+    [Theory]
+    [InlineData("MediaBrowser Client=\"Jellyfin Android\", Device=\"Pixel\"")]
+    [InlineData(null)]
+    public void LeavesTheBrandingAloneForOtherClientsWhenLocalLoginIsRefused(string? authorization)
+    {
+        _configuration.LocalLoginPolicy = LocalLoginPolicy.Disabled;
+
+        var branding = FilterBranding(authorization, "Welcome home.");
+
+        Assert.Equal("Welcome home.", branding.LoginDisclaimer);
+        Assert.Equal("body{}", branding.CustomCss);
+    }
+
+    [Fact]
+    public void LeavesTheBrandingAloneUntilThePluginIsFullyConfiguredWhateverThePolicy()
+    {
+        _configuration.LocalLoginPolicy = LocalLoginPolicy.Disabled;
+        _configuration.ClientSecret = string.Empty;
+
+        var branding = FilterBranding(JellyfinWeb, "Welcome home.");
+
+        Assert.Equal("Welcome home.", branding.LoginDisclaimer);
+        Assert.Equal("body{}", branding.CustomCss);
+    }
+
     [Fact]
     public void IgnoresOtherResults()
     {
@@ -127,7 +207,7 @@ public sealed class BrandingFilterTests
         var result = new ObjectResult("Welcome home.");
         var context = new ResultExecutingContext(new ActionContext(httpContext, new RouteData(), new ActionDescriptor()), new List<IFilterMetadata>(), result, controller: new object());
 
-        new BrandingFilter(() => _configuration).OnResultExecuting(context);
+        new BrandingFilter(() => _configuration, _ => _local).OnResultExecuting(context);
 
         Assert.Equal("Welcome home.", Assert.IsType<ObjectResult>(context.Result).Value);
         Assert.Equal(0, httpContext.Response.Headers.Vary.Count);
@@ -135,24 +215,30 @@ public sealed class BrandingFilterTests
 
     private string? Filter(string? authorization, string? loginDisclaimer, HttpContext? httpContext = null)
     {
+        var branding = FilterBranding(authorization, loginDisclaimer, httpContext);
+        Assert.Equal("body{}", branding.CustomCss);
+        return branding.LoginDisclaimer;
+    }
+
+    private BrandingOptionsDto FilterBranding(string? authorization, string? loginDisclaimer, HttpContext? httpContext = null, string? customCss = "body{}")
+    {
         httpContext ??= new DefaultHttpContext();
         if (authorization is not null)
         {
             httpContext.Request.Headers.Authorization = authorization;
         }
 
-        var result = new ObjectResult(new BrandingOptionsDto { LoginDisclaimer = loginDisclaimer, CustomCss = "body{}", SplashscreenEnabled = true });
+        var result = new ObjectResult(new BrandingOptionsDto { LoginDisclaimer = loginDisclaimer, CustomCss = customCss, SplashscreenEnabled = true });
         var context = new ResultExecutingContext(
             new ActionContext(httpContext, new RouteData(), new ActionDescriptor()),
             new List<IFilterMetadata>(),
             result,
             controller: new object());
 
-        new BrandingFilter(() => _configuration).OnResultExecuting(context);
+        new BrandingFilter(() => _configuration, _ => _local).OnResultExecuting(context);
 
         var dto = Assert.IsType<BrandingOptionsDto>(Assert.IsType<ObjectResult>(context.Result).Value);
-        Assert.Equal("body{}", dto.CustomCss);
         Assert.True(dto.SplashscreenEnabled);
-        return dto.LoginDisclaimer;
+        return dto;
     }
 }
