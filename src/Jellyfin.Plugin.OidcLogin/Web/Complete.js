@@ -53,6 +53,10 @@
         server.manualAddressOnly = true;
         server.DateLastAccessed = new Date().getTime();
         localStorage.setItem('jellyfin_credentials', JSON.stringify(credentials));
+
+        // jellyfin-web's "Remember me" (appSettings.enableAutoLogin) belongs to Local Login: left at "false" from an
+        // earlier one, jellyfin-web would drop this session at startup and show the login page again.
+        localStorage.setItem('enableAutoLogin', 'true');
     }
 
     // Shows the error page for a failure, which renders the category's message and the reference code.
