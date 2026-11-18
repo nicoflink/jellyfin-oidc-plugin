@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
 using Xunit;
@@ -10,7 +11,7 @@ namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 /// The whole OIDC Login (scenarios 1 and 2): from the "Sign in with PocketID" button on the anonymous login page to
 /// signed in on Jellyfin's home page, in the same tab.
 /// </summary>
-public sealed class LoginCompleteTests(E2EEnvironment environment)
+public sealed partial class LoginCompleteTests(E2EEnvironment environment)
 {
     [Fact]
     public async Task PasskeyLoginLandsHomeAsTheProvisionedUserAndARepeatLoginAsTheSameUser()
@@ -63,6 +64,30 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
         }
     }
 
+    /// <summary>
+    /// A browser where someone once used Local Login without "Remember me" (#50): jellyfin-web would drop the session
+    /// at startup and show the login page again, which with a live PocketID session looks like an endless loop.
+    /// </summary>
+    [Fact]
+    public async Task PasskeyLoginLandsHomeInABrowserWhereRememberMeWasTurnedOff()
+    {
+        await SignInAsync(rememberMeTurnedOff: true);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> and waits until jellyfin-web is signed in on its home page: it fetches the signed-in
+    /// user with the session's token. The URL alone proves nothing, because jellyfin-web shows <c>#/home</c> before its
+    /// connection check, which drops the session while "Remember me" is off.
+    /// </summary>
+    private async Task WaitUntilSignedInAsync(IPage page, Func<Task> action)
+    {
+        var currentUser = await page.RunAndWaitForResponseAsync(action, r => r.Request.Method == "GET" && CurrentUserPath().IsMatch(new Uri(r.Url).AbsolutePath));
+        Assert.Equal(200, currentUser.Status);
+        var webHome = new Uri(environment.JellyfinUrl, "web/").ToString();
+        await page.WaitForURLAsync(url => url.StartsWith(webHome, StringComparison.Ordinal) && url.Contains("#/home", StringComparison.Ordinal));
+        await Assertions.Expect(page.Locator("#loginPage")).ToHaveCountAsync(0);
+    }
+
     private async Task<bool> IsAdministratorAsync(Guid userId)
     {
         using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
@@ -73,22 +98,25 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
 
     /// <summary>
     /// Runs an OIDC Login with Alice's passkey in a fresh browser and returns the credentials jellyfin-web holds on
-    /// its home page, checked against the server.
+    /// its home page, checked against the server. With <paramref name="rememberMeTurnedOff"/>, the browser first holds
+    /// what jellyfin-web stores after a Local Login with "Remember me" unchecked.
     /// </summary>
-    private async Task<(Guid UserId, string AccessToken, string DeviceId)> SignInAsync()
+    private async Task<(Guid UserId, string AccessToken, string DeviceId)> SignInAsync(bool rememberMeTurnedOff = false)
     {
         await using var session = await environment.NewSessionAsync(withAlicePasskey: true);
         var page = session.Page;
 
         await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/login").ToString());
+        if (rememberMeTurnedOff)
+        {
+            await page.EvaluateAsync("() => localStorage.setItem('enableAutoLogin', 'false')");
+            await page.ReloadAsync();
+        }
+
         await page.GetByRole(AriaRole.Button, new() { Name = "Sign in with PocketID" }).ClickAsync();
         await page.WaitForURLAsync(url => new Uri(url).Authority == environment.PocketIdUrl.Authority);
         Assert.Single(session.Context.Pages);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync();
-
-        var webHome = new Uri(environment.JellyfinUrl, "web/").ToString();
-        await page.WaitForURLAsync(url => url.StartsWith(webHome, StringComparison.Ordinal) && url.Contains("#/home", StringComparison.Ordinal));
-        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Sign In" })).ToHaveCountAsync(0);
+        await WaitUntilSignedInAsync(page, () => page.GetByRole(AriaRole.Button, new() { Name = "Sign in", Exact = true }).ClickAsync());
 
         var credentials = JsonDocument.Parse(await page.EvaluateAsync<string>("() => localStorage.getItem('jellyfin_credentials')")).RootElement;
         var server = Assert.Single(credentials.GetProperty("Servers").EnumerateArray());
@@ -103,8 +131,14 @@ public sealed class LoginCompleteTests(E2EEnvironment environment)
         Assert.Equal(Guid.Parse(server.GetProperty("UserId").GetString()!), userId);
         Assert.Equal(E2EEnvironment.Alice.Username, me.GetProperty("Name").GetString());
 
+        // jellyfin-web keeps the session across page loads.
+        await WaitUntilSignedInAsync(page, () => page.ReloadAsync());
+
         // Complete cleared the flow cookie.
         Assert.DoesNotContain(await session.Context.CookiesAsync([environment.JellyfinUrl.ToString()]), c => c.Name == "OidcLogin-Flow");
         return (userId, accessToken, deviceId);
     }
+
+    [GeneratedRegex("^/Users/[0-9a-f]{32}$")]
+    private static partial Regex CurrentUserPath();
 }
