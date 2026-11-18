@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using MediaBrowser.Controller.Library;
 
@@ -40,6 +42,21 @@ public sealed class LinkedIdentityAdmin
         => _store.GetAll()
             .Select(l => new LinkedIdentityEntry(l.Issuer, l.Subject, l.UserId, _userManager.GetUserById(l.UserId)?.Username, l.LinkedAt, l.LastLoginAt))
             .ToArray();
+
+    /// <summary>
+    /// Counts the enabled Jellyfin users without a Linked Identity at the configured Issuer URL, for the configuration
+    /// page's lockout warnings. A link at another issuer no longer gets anyone in.
+    /// </summary>
+    /// <returns>How many there are, and how many of them are administrators.</returns>
+    public UnlinkedUsers CountUnlinkedUsers()
+    {
+        var issuer = _configuration().IssuerUrl;
+        var linked = _store.GetAll().Where(l => l.Issuer == issuer).Select(l => l.UserId).ToHashSet();
+        var unlinked = _userManager.GetUsers()
+            .Where(u => !u.HasPermission(PermissionKind.IsDisabled) && !linked.Contains(u.Id))
+            .ToArray();
+        return new UnlinkedUsers(unlinked.Length, unlinked.Count(u => u.HasPermission(PermissionKind.IsAdministrator)));
+    }
 
     /// <summary>
     /// Links an existing Jellyfin user to the Subject <paramref name="sub"/> at the configured Issuer URL.

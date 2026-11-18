@@ -1,6 +1,6 @@
 # OIDC Login for Jellyfin
 
-A Jellyfin 12.x plugin that lets people sign in to the Jellyfin web UI through one OpenID Connect Identity Provider. It is tested against PocketID, so passkeys become the way into Jellyfin. Local Login keeps working.
+A Jellyfin 12.x plugin that lets people sign in to the Jellyfin web UI through one OpenID Connect Identity Provider. It is tested against PocketID, so passkeys become the way into Jellyfin. Jellyfin's own username-and-password sign-in (Local Login) keeps working unless you restrict it.
 
 ## Installing
 
@@ -13,6 +13,20 @@ The Plugin is published in its own plugin repository, so Jellyfin installs and u
 3. Restart Jellyfin.
 
 Each release is built for one Jellyfin minor version and needs at least that version. Jellyfin only offers releases whose target version your server meets, so update Jellyfin first if the latest release doesn't show up.
+
+## Restricting Local Login
+
+On the Plugin's configuration page, the **Local Login** step sets where password sign-in is accepted:
+
+- **Allowed** (the default): everywhere, as without the Plugin.
+- **Local network only**: only from the LAN networks set in Jellyfin's networking settings. From the internet, password sign-in is refused.
+- **Disabled**: nowhere.
+
+OIDC Login and Quick Connect are never restricted, so native and TV apps sign in by approving a Quick Connect code from a web session signed in through your Identity Provider. Keep Quick Connect switched on in Jellyfin. A refused password sign-in gets `403` before the password is checked, and jellyfin-web's login page hides the password form. The policy takes effect only once the Plugin is fully configured, and stays in force while the Identity Provider is down.
+
+**Getting back in:** if your Identity Provider breaks while Local Login is restricted, sign in from the local network (with **Local network only**), or disable or remove the Plugin. Nothing is written to Jellyfin's users, so Local Login works again immediately.
+
+**Behind a reverse proxy:** with **Local network only**, add the proxy's address to **Known Proxies** in Jellyfin's networking settings. Otherwise Jellyfin sees every request as coming from the proxy, which is usually local, and lets the whole internet sign in with a password. The configuration page warns when it detects this.
 
 ## Releases
 

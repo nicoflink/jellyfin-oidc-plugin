@@ -73,4 +73,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Plugin is fully configured.
     /// </summary>
     public bool ShowSignInButton { get; set; }
+
+    /// <summary>
+    /// Gets or sets where Local Login is accepted once the Plugin is fully configured.
+    /// </summary>
+    public LocalLoginPolicy LocalLoginPolicy { get; set; } = LocalLoginPolicy.Allowed;
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.Login;
 using MediaBrowser.Model.Branding;
 using Microsoft.AspNetCore.Http;
@@ -12,8 +13,9 @@ namespace Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
 
 /// <summary>
 /// The Login Entry Point: appends a "Sign in with PocketID" button to the login disclaimer that the anonymous
-/// <c>GET /Branding/Configuration</c> returns, at response time. Nothing is written to the Branding config, so the
-/// admin's text stays theirs and uninstalling the Plugin leaves nothing behind.
+/// <c>GET /Branding/Configuration</c> returns, at response time. While the Local Login Policy refuses Local Login for
+/// that request, it also hides the password form with custom CSS and adds a hint. Nothing is written to the Branding
+/// config, so the admin's text stays theirs and uninstalling the Plugin leaves nothing behind.
 /// </summary>
 /// <remarks>
 /// jellyfin-web renders the disclaimer as Markdown with HTML and forces every <c>&lt;a&gt;</c> into a new tab, so the
@@ -32,15 +34,32 @@ public sealed class BrandingFilter : IResultFilter
         "display:block;box-sizing:border-box;width:100%;margin:1.25em 0 0;padding:0.9em 1em;border:0;border-radius:0.2em;"
         + "background:#00a4dc;color:#fff;font:inherit;font-weight:600;cursor:pointer";
 
+    private const string HintStyle = "margin:1em 0 0;text-align:center;opacity:0.8";
+
+    /// <summary>
+    /// The hint shown below the button while Local Login is refused, on one line like the button.
+    /// </summary>
+    private const string Hint = $"<p class=\"oidc-login-hint\" style=\"{HintStyle}\">Password sign-in is disabled. Use Quick Connect in apps.</p>";
+
+    /// <summary>
+    /// Hides jellyfin-web's Local Login: its manual login form, the "Manual Login" button that would open the hidden
+    /// form, and the user tiles. jellyfin-web's class names are a contract the E2E login-page scenario guards.
+    /// </summary>
+    private const string HideLocalLoginCss =
+        "#loginPage .manualLoginForm,#loginPage .visualLoginForm,#loginPage .btnManual{display:none!important}";
+
     private readonly Func<PluginConfiguration> _configuration;
+    private readonly LocalLoginPolicyCheck _policyCheck;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BrandingFilter"/> class.
     /// </summary>
     /// <param name="configuration">Reads the current plugin configuration.</param>
-    public BrandingFilter(Func<PluginConfiguration> configuration)
+    /// <param name="policyCheck">Decides whether the Local Login Policy refuses a request.</param>
+    public BrandingFilter(Func<PluginConfiguration> configuration, LocalLoginPolicyCheck policyCheck)
     {
         _configuration = configuration;
+        _policyCheck = policyCheck;
     }
 
     /// <inheritdoc />
@@ -56,22 +75,33 @@ public sealed class BrandingFilter : IResultFilter
         response.Headers.Append(HeaderNames.Vary, HeaderNames.Authorization);
 
         var configuration = _configuration();
-        if (!configuration.ShowSignInButton
-            || !OidcLoginService.IsConfigured(configuration)
+        if (!OidcLoginService.IsConfigured(configuration)
             || !string.Equals(ClientName(context.HttpContext.Request.Headers.Authorization), WebClient, StringComparison.Ordinal))
         {
             return;
         }
 
         // The controller builds a fresh DTO per request, so changing it changes only this response.
-        var button = Button(OidcLoginEndpoints.Url(configuration, "Start"));
-        branding.LoginDisclaimer = string.IsNullOrEmpty(branding.LoginDisclaimer) ? button : branding.LoginDisclaimer + "\n\n" + button;
+        if (configuration.ShowSignInButton)
+        {
+            branding.LoginDisclaimer = Append(branding.LoginDisclaimer, "\n\n", Button(OidcLoginEndpoints.Url(configuration, "Start")));
+        }
+
+        // Even without the button: a login page offering Local Login that will be refused only misleads.
+        if (_policyCheck.RefusedBy(context.HttpContext) is not null)
+        {
+            branding.LoginDisclaimer = Append(branding.LoginDisclaimer, "\n\n", Hint);
+            branding.CustomCss = Append(branding.CustomCss, "\n", HideLocalLoginCss);
+        }
     }
 
     /// <inheritdoc />
     public void OnResultExecuted(ResultExecutedContext context)
     {
     }
+
+    private static string Append(string? existing, string separator, string addition)
+        => string.IsNullOrEmpty(existing) ? addition : existing + separator + addition;
 
     /// <summary>
     /// The button, on one line so Markdown reads it as one HTML block.

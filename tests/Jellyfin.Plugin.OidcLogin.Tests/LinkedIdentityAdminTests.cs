@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using Jellyfin.Data;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.Login;
 using Microsoft.Extensions.Time.Testing;
@@ -140,6 +142,31 @@ public sealed class LinkedIdentityAdminTests : IDisposable
         Assert.False(admin.Unlink(Guid.NewGuid()));
 
         Assert.Single(new LinkedIdentityStore(_dataFolder).GetAll());
+    }
+
+    [Fact]
+    public void CountsEnabledUsersWithoutALinkedIdentityAndTheAdministratorsAmongThem()
+    {
+        var linked = _users.Add("alice");
+        _users.Add("bob");
+        _users.AddAdministrator("root");
+        var linkedAdministrator = _users.AddAdministrator("carol");
+        var disabledAdministrator = _users.AddAdministrator("dave");
+        disabledAdministrator.SetPermission(PermissionKind.IsDisabled, true);
+        var store = new LinkedIdentityStore(_dataFolder);
+        store.Add(new LinkedIdentity(StubIdentityProvider.Issuer, "sub-alice", linked.Id, LinkedAt, null));
+        store.Add(new LinkedIdentity(StubIdentityProvider.Issuer, "sub-carol", linkedAdministrator.Id, LinkedAt, null));
+
+        Assert.Equal(new UnlinkedUsers(2, 1), CreateAdmin().CountUnlinkedUsers());
+    }
+
+    [Fact]
+    public void CountsAUserLinkedOnlyAtAnotherIssuerAsUnlinked()
+    {
+        var alice = _users.AddAdministrator("alice");
+        new LinkedIdentityStore(_dataFolder).Add(new LinkedIdentity("https://old-id.example.test", "sub-alice", alice.Id, LinkedAt, null));
+
+        Assert.Equal(new UnlinkedUsers(1, 1), CreateAdmin().CountUnlinkedUsers());
     }
 
     public void Dispose() => Directory.Delete(_dataFolder, recursive: true);
