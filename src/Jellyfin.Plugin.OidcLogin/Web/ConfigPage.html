@@ -194,7 +194,7 @@
       var savedIssuerUrl = '';
       var clientSecretSet = false;
       var linkedIdentityCount = 0;
-      var lockout = { unlinkedUsers: { count: 0, administrators: 0 }, quickConnectEnabled: true, proxyNotTrusted: false };
+      var lockoutFacts = { unlinkedUsers: { count: 0, administrators: 0 }, quickConnectEnabled: true, proxyNotTrusted: false };
 
       function field(id) { return page.querySelector('#' + id); }
       function value(id) { return field(id).value.trim(); }
@@ -247,21 +247,20 @@
 
       // Inform, never block: the admin may restrict Local Login deliberately, for example during an attack.
       function lockoutWarnings() {
-        var policy = localLoginPolicy();
-        if (policy === 'Allowed') return [];
+        if (localLoginPolicy() === 'Allowed') return [];
         var warnings = [];
-        var unlinked = lockout.unlinkedUsers;
+        var unlinked = lockoutFacts.unlinkedUsers;
         if (unlinked.count > 0) {
           warnings.push(unlinked.count + ' enabled Jellyfin ' + (unlinked.count === 1 ? 'user has' : 'users have') + ' no Linked Identity and can only sign in with a password.');
         }
         if (unlinked.administrators > 0) {
           warnings.push(unlinked.administrators + ' of them ' + (unlinked.administrators === 1 ? 'is an administrator' : 'are administrators') + ': make sure you don\'t lock yourself out.');
         }
-        if (!lockout.quickConnectEnabled) {
+        if (!lockoutFacts.quickConnectEnabled) {
           warnings.push('Quick Connect is switched off in Jellyfin, so native and TV apps can\'t sign in without a password.');
         }
-        if (policy === 'LocalNetworkOnly' && lockout.proxyNotTrusted) {
-          warnings.push('This page came through a reverse proxy that Jellyfin doesn\'t trust, so every request looks local. Add the proxy to Known Proxies in Jellyfin\'s networking settings.');
+        if (lockoutFacts.proxyNotTrusted) {
+          warnings.push('This page came through a reverse proxy that Jellyfin doesn\'t trust, so every request looks local, and Local network only would let the whole internet sign in with a password. Add the proxy to Known Proxies in Jellyfin\'s networking settings.');
         }
         return warnings;
       }
@@ -326,7 +325,7 @@
           page.querySelectorAll('input[name="oidcLocalLoginPolicy"]').forEach(function (choice) {
             choice.checked = choice.value === c.localLoginPolicy;
           });
-          lockout = { unlinkedUsers: result.unlinkedUsers, quickConnectEnabled: result.quickConnectEnabled, proxyNotTrusted: result.proxyNotTrusted };
+          lockoutFacts = result.lockoutFacts;
           savedIssuerUrl = c.issuerUrl;
           clientSecretSet = result.clientSecretSet;
           linkedIdentityCount = result.linkedIdentityCount;

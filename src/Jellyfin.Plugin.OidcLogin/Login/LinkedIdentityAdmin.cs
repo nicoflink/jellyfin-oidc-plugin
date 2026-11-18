@@ -44,12 +44,14 @@ public sealed class LinkedIdentityAdmin
             .ToArray();
 
     /// <summary>
-    /// Counts the enabled Jellyfin users without a Linked Identity, for the configuration page's lockout warnings.
+    /// Counts the enabled Jellyfin users without a Linked Identity at the configured Issuer URL, for the configuration
+    /// page's lockout warnings. A link at another issuer no longer gets anyone in.
     /// </summary>
     /// <returns>How many there are, and how many of them are administrators.</returns>
     public UnlinkedUsers CountUnlinkedUsers()
     {
-        var linked = _store.GetAll().Select(l => l.UserId).ToHashSet();
+        var issuer = _configuration().IssuerUrl;
+        var linked = _store.GetAll().Where(l => l.Issuer == issuer).Select(l => l.UserId).ToHashSet();
         var unlinked = _userManager.GetUsers()
             .Where(u => !u.HasPermission(PermissionKind.IsDisabled) && !linked.Contains(u.Id))
             .ToArray();

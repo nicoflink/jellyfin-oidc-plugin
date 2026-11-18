@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Jellyfin.Plugin.OidcLogin.Configuration;
+using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
 using MediaBrowser.Model.Branding;
 using Microsoft.AspNetCore.Http;
@@ -29,10 +30,10 @@ public sealed class BrandingFilterTests
         + "Password sign-in is disabled. Use Quick Connect in apps.</p>";
 
     /// <summary>
-    /// Hides jellyfin-web's manual login form, its "Manual Login" button and the user tiles, leaving the Quick
+    /// Hides jellyfin-web's Local Login: the manual login form, its "Manual Login" button and the user tiles, leaving the Quick
     /// Connect button and the disclaimer.
     /// </summary>
-    private const string HidePasswordLoginCss =
+    private const string HideLocalLoginCss =
         "#loginPage .manualLoginForm,#loginPage .visualLoginForm,#loginPage .btnManual{display:none!important}";
 
     private readonly PluginConfiguration _configuration = new()
@@ -44,7 +45,7 @@ public sealed class BrandingFilterTests
         ShowSignInButton = true,
     };
 
-    private bool _local;
+    private readonly FakeLocalNetwork _localNetwork = new();
 
     [Fact]
     public void AppendsSameTabFormButtonAfterTheAdminsTextForJellyfinWeb()
@@ -135,15 +136,15 @@ public sealed class BrandingFilterTests
     [InlineData(LocalLoginPolicy.Disabled, true)]
     [InlineData(LocalLoginPolicy.Disabled, false)]
     [InlineData(LocalLoginPolicy.LocalNetworkOnly, false)]
-    public void HidesThePasswordFormAndAddsTheHintBelowTheButtonWhenLocalLoginIsRefused(LocalLoginPolicy policy, bool local)
+    public void HidesLocalLoginAndAddsTheHintBelowTheButtonWhenLocalLoginIsRefused(LocalLoginPolicy policy, bool local)
     {
         _configuration.LocalLoginPolicy = policy;
-        _local = local;
+        _localNetwork.Local = local;
 
         var branding = FilterBranding(JellyfinWeb, "Welcome home.");
 
         Assert.Equal("Welcome home.\n\n" + Button + "\n\n" + Hint, branding.LoginDisclaimer);
-        Assert.Equal("body{}\n" + HidePasswordLoginCss, branding.CustomCss);
+        Assert.Equal("body{}\n" + HideLocalLoginCss, branding.CustomCss);
     }
 
     [Theory]
@@ -157,7 +158,7 @@ public sealed class BrandingFilterTests
         var branding = FilterBranding(JellyfinWeb, adminContent, customCss: adminContent);
 
         Assert.Equal(Hint, branding.LoginDisclaimer);
-        Assert.Equal(HidePasswordLoginCss, branding.CustomCss);
+        Assert.Equal(HideLocalLoginCss, branding.CustomCss);
     }
 
     [Theory]
@@ -166,7 +167,7 @@ public sealed class BrandingFilterTests
     public void LeavesTheCssAndButtonAloneWhenLocalLoginIsAccepted(LocalLoginPolicy policy, bool local)
     {
         _configuration.LocalLoginPolicy = policy;
-        _local = local;
+        _localNetwork.Local = local;
 
         var branding = FilterBranding(JellyfinWeb, "Welcome home.");
 
@@ -207,7 +208,7 @@ public sealed class BrandingFilterTests
         var result = new ObjectResult("Welcome home.");
         var context = new ResultExecutingContext(new ActionContext(httpContext, new RouteData(), new ActionDescriptor()), new List<IFilterMetadata>(), result, controller: new object());
 
-        new BrandingFilter(() => _configuration, _ => _local).OnResultExecuting(context);
+        new BrandingFilter(() => _configuration, new LocalLoginPolicyCheck(() => _configuration, _localNetwork)).OnResultExecuting(context);
 
         Assert.Equal("Welcome home.", Assert.IsType<ObjectResult>(context.Result).Value);
         Assert.Equal(0, httpContext.Response.Headers.Vary.Count);
@@ -235,7 +236,7 @@ public sealed class BrandingFilterTests
             result,
             controller: new object());
 
-        new BrandingFilter(() => _configuration, _ => _local).OnResultExecuting(context);
+        new BrandingFilter(() => _configuration, new LocalLoginPolicyCheck(() => _configuration, _localNetwork)).OnResultExecuting(context);
 
         var dto = Assert.IsType<BrandingOptionsDto>(Assert.IsType<ObjectResult>(context.Result).Value);
         Assert.True(dto.SplashscreenEnabled);

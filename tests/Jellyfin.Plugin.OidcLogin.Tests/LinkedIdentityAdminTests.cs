@@ -144,8 +144,6 @@ public sealed class LinkedIdentityAdminTests : IDisposable
         Assert.Single(new LinkedIdentityStore(_dataFolder).GetAll());
     }
 
-    public void Dispose() => Directory.Delete(_dataFolder, recursive: true);
-
     [Fact]
     public void CountsEnabledUsersWithoutALinkedIdentityAndTheAdministratorsAmongThem()
     {
@@ -161,6 +159,17 @@ public sealed class LinkedIdentityAdminTests : IDisposable
 
         Assert.Equal(new UnlinkedUsers(2, 1), CreateAdmin().CountUnlinkedUsers());
     }
+
+    [Fact]
+    public void CountsAUserLinkedOnlyAtAnotherIssuerAsUnlinked()
+    {
+        var alice = _users.AddAdministrator("alice");
+        new LinkedIdentityStore(_dataFolder).Add(new LinkedIdentity("https://old-id.example.test", "sub-alice", alice.Id, LinkedAt, null));
+
+        Assert.Equal(new UnlinkedUsers(1, 1), CreateAdmin().CountUnlinkedUsers());
+    }
+
+    public void Dispose() => Directory.Delete(_dataFolder, recursive: true);
 
     private LinkedIdentityAdmin CreateAdmin() => new(new LinkedIdentityStore(_dataFolder), _users.Manager, _clock, () => _configuration);
 }

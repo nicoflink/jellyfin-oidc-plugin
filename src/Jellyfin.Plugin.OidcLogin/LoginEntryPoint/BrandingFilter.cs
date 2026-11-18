@@ -42,24 +42,24 @@ public sealed class BrandingFilter : IResultFilter
     private const string Hint = $"<p class=\"oidc-login-hint\" style=\"{HintStyle}\">Password sign-in is disabled. Use Quick Connect in apps.</p>";
 
     /// <summary>
-    /// Hides jellyfin-web's manual login form, the "Manual Login" button that opens it, and the user tiles. jellyfin-web's
-    /// class names are a contract the E2E login-page scenario guards.
+    /// Hides jellyfin-web's Local Login: its manual login form, the "Manual Login" button that would open the hidden
+    /// form, and the user tiles. jellyfin-web's class names are a contract the E2E login-page scenario guards.
     /// </summary>
-    private const string HidePasswordLoginCss =
+    private const string HideLocalLoginCss =
         "#loginPage .manualLoginForm,#loginPage .visualLoginForm,#loginPage .btnManual{display:none!important}";
 
     private readonly Func<PluginConfiguration> _configuration;
-    private readonly Func<HttpContext, bool> _isLocal;
+    private readonly LocalLoginPolicyCheck _policyCheck;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BrandingFilter"/> class.
     /// </summary>
     /// <param name="configuration">Reads the current plugin configuration.</param>
-    /// <param name="isLocal">Whether Jellyfin classifies a request as coming from its local network.</param>
-    public BrandingFilter(Func<PluginConfiguration> configuration, Func<HttpContext, bool> isLocal)
+    /// <param name="policyCheck">Decides whether the Local Login Policy refuses a request.</param>
+    public BrandingFilter(Func<PluginConfiguration> configuration, LocalLoginPolicyCheck policyCheck)
     {
         _configuration = configuration;
-        _isLocal = isLocal;
+        _policyCheck = policyCheck;
     }
 
     /// <inheritdoc />
@@ -87,10 +87,11 @@ public sealed class BrandingFilter : IResultFilter
             branding.LoginDisclaimer = Append(branding.LoginDisclaimer, "\n\n", Button(OidcLoginEndpoints.Url(configuration, "Start")));
         }
 
-        if (LocalLoginPolicyFilter.Refuses(configuration, () => _isLocal(context.HttpContext)))
+        // Even without the button: a login page offering Local Login that will be refused only misleads.
+        if (_policyCheck.RefusedBy(context.HttpContext) is not null)
         {
             branding.LoginDisclaimer = Append(branding.LoginDisclaimer, "\n\n", Hint);
-            branding.CustomCss = Append(branding.CustomCss, "\n", HidePasswordLoginCss);
+            branding.CustomCss = Append(branding.CustomCss, "\n", HideLocalLoginCss);
         }
     }
 

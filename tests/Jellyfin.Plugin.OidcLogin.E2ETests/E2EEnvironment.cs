@@ -139,7 +139,15 @@ public sealed class E2EEnvironment : IAsyncLifetime
     /// runs <paramref name="whileChanged"/>, and puts the configuration back. Only for tests in the
     /// <see cref="ConfigurationChanges"/> collection.
     /// </summary>
-    internal async Task WithConfigurationAsync(Action<JsonObject> change, Func<Task> whileChanged)
+    internal Task WithConfigurationAsync(Action<JsonObject> change, Func<Task> whileChanged)
+        => WithConfigurationAsync(change, _ => whileChanged());
+
+    /// <summary>
+    /// Like <see cref="WithConfigurationAsync(Action{JsonObject}, Func{Task})"/>, handing <paramref name="whileChanged"/>
+    /// the admin access token it restores the configuration with. A second Local Login as the admin from this harness's
+    /// device would end that session, so tests that need an admin token while the configuration is changed use this one.
+    /// </summary>
+    internal async Task WithConfigurationAsync(Action<JsonObject> change, Func<string, Task> whileChanged)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var jellyfin = new JellyfinServer(JellyfinUrl);
@@ -152,7 +160,7 @@ public sealed class E2EEnvironment : IAsyncLifetime
         await jellyfin.PostAsAdminAsync("OidcLogin/Configuration", new { Configuration = changed }, adminToken, cancellationToken);
         try
         {
-            await whileChanged();
+            await whileChanged(adminToken);
         }
         finally
         {

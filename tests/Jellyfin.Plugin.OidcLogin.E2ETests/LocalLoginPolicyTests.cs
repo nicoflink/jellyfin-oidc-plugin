@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Playwright;
 using Xunit;
@@ -11,7 +12,7 @@ using Xunit;
 namespace Jellyfin.Plugin.OidcLogin.E2ETests;
 
 /// <summary>
-/// The Local Login Policy: password sign-in refused by both of Jellyfin's routes, Quick Connect unaffected, the
+/// The Local Login Policy: Local Login refused on both of Jellyfin's routes, Quick Connect unaffected, the
 /// login page adapted, and the setting on the configuration page. <c>LocalNetworkOnly</c> is covered by unit tests
 /// only: a request from outside the local network can't be produced reliably in the container network.
 /// </summary>
@@ -21,7 +22,7 @@ public sealed class LocalLoginPolicyTests(E2EEnvironment environment)
     private const string Refusal = "Password sign-in is disabled on this server.";
 
     [Fact]
-    public async Task DisabledRefusesBothPasswordRoutesAndAllowedAcceptsThem()
+    public async Task DisabledRefusesBothLocalLoginRoutesAndAllowedAcceptsThem()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
@@ -107,7 +108,7 @@ public sealed class LocalLoginPolicyTests(E2EEnvironment environment)
     }
 
     [Fact]
-    public async Task LoginPageHidesThePasswordFormAndShowsTheHintWhenDisabled()
+    public async Task LoginPageHidesLocalLoginAndShowsTheHintWhenDisabled()
     {
         await environment.WithConfigurationAsync(c => c["localLoginPolicy"] = "Disabled", async () =>
         {
@@ -130,56 +131,57 @@ public sealed class LocalLoginPolicyTests(E2EEnvironment environment)
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var jellyfin = new JellyfinServer(environment.JellyfinUrl);
-        var adminToken = await jellyfin.AuthenticateAsync(E2EEnvironment.JellyfinAdminName, E2EEnvironment.JellyfinAdminPassword, cancellationToken);
-        var serverConfiguration = await jellyfin.GetAsync("System/Configuration", adminToken, cancellationToken);
-        var quickConnectOff = JsonNode.Parse(serverConfiguration.GetRawText())!.AsObject();
-        quickConnectOff["QuickConnectAvailable"] = false;
-
         await using var session = await environment.NewSessionAsync();
         var page = session.Page;
         await environment.LocalLoginAsAdminAsync(page);
-        await jellyfin.PostAsAdminAsync("System/Configuration", quickConnectOff, adminToken, cancellationToken);
-        try
+
+        // Puts the Local Login Policy back afterwards, whatever the page saved.
+        await environment.WithConfigurationAsync(_ => { }, async adminToken =>
         {
-            await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/configurationpage?name=OidcLogin").ToString());
-            var configPage = page.Locator("#OidcLoginConfigPage");
-            var warnings = configPage.Locator("#oidcLocalLoginWarnings");
-            var allowed = configPage.GetByRole(AriaRole.Radio, new() { Name = "Allowed" });
-            await Assertions.Expect(allowed).ToBeCheckedAsync();
-            await Assertions.Expect(warnings).ToBeEmptyAsync();
-
-            // The setup admin has no Linked Identity, and Quick Connect is off.
-            await configPage.GetByRole(AriaRole.Radio, new() { Name = "Disabled" }).CheckAsync();
-            await Assertions.Expect(warnings).ToContainTextAsync("no Linked Identity");
-            await Assertions.Expect(warnings).ToContainTextAsync("is an administrator");
-            await Assertions.Expect(warnings).ToContainTextAsync("Quick Connect is switched off");
-
-            // Warnings don't block saving.
-            await configPage.GetByRole(AriaRole.Button, new() { Name = "Save" }).ClickAsync();
-            await Assertions.Expect(configPage.Locator("#oidcSaveResult")).ToHaveTextAsync("Saved.");
-            var settings = await jellyfin.GetAsync("OidcLogin/Configuration", adminToken, cancellationToken);
-            Assert.Equal("Disabled", settings.GetProperty("configuration").GetProperty("localLoginPolicy").GetString());
-            Assert.False(settings.GetProperty("quickConnectEnabled").GetBoolean());
-            Assert.True(settings.GetProperty("unlinkedUsers").GetProperty("administrators").GetInt32() >= 1);
-            using (var refused = await AuthenticateByNameAsync(jellyfin))
+            var serverConfiguration = await jellyfin.GetAsync("System/Configuration", adminToken, cancellationToken);
+            var quickConnectOff = JsonNode.Parse(serverConfiguration.GetRawText())!.AsObject();
+            quickConnectOff["QuickConnectAvailable"] = false;
+            await jellyfin.PostAsAdminAsync("System/Configuration", quickConnectOff, adminToken, cancellationToken);
+            try
             {
-                Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
-            }
+                await page.GotoAsync(new Uri(environment.JellyfinUrl, "web/#/configurationpage?name=OidcLogin").ToString());
+                var configPage = page.Locator("#OidcLoginConfigPage");
+                var warnings = configPage.Locator("#oidcLocalLoginWarnings");
+                var allowed = configPage.GetByRole(AriaRole.Radio, new() { Name = "Allowed" });
+                var disabled = configPage.GetByRole(AriaRole.Radio, new() { Name = "Disabled" });
+                await Assertions.Expect(allowed).ToBeCheckedAsync();
+                await Assertions.Expect(warnings).ToBeEmptyAsync();
 
-            await Assertions.Expect(configPage.GetByRole(AriaRole.Radio, new() { Name = "Disabled" })).ToBeCheckedAsync();
-            await allowed.CheckAsync();
-            await Assertions.Expect(warnings).ToBeEmptyAsync();
-            await configPage.GetByRole(AriaRole.Button, new() { Name = "Save" }).ClickAsync();
-            await Assertions.Expect(configPage.Locator("#oidcSaveResult")).ToHaveTextAsync("Saved.");
-        }
-        finally
-        {
-            await jellyfin.PostAsAdminAsync("System/Configuration", serverConfiguration, adminToken, System.Threading.CancellationToken.None);
-            var settings = await jellyfin.GetAsync("OidcLogin/Configuration", adminToken, System.Threading.CancellationToken.None);
-            var configuration = JsonNode.Parse(settings.GetProperty("configuration").GetRawText())!.AsObject();
-            configuration["localLoginPolicy"] = "Allowed";
-            await jellyfin.PostAsAdminAsync("OidcLogin/Configuration", new { Configuration = configuration }, adminToken, System.Threading.CancellationToken.None);
-        }
+                // The setup admin has no Linked Identity, and Quick Connect is off.
+                await disabled.CheckAsync();
+                await Assertions.Expect(warnings).ToContainTextAsync("no Linked Identity");
+                await Assertions.Expect(warnings).ToContainTextAsync("is an administrator");
+                await Assertions.Expect(warnings).ToContainTextAsync("Quick Connect is switched off");
+
+                // Warnings don't block saving.
+                await configPage.GetByRole(AriaRole.Button, new() { Name = "Save" }).ClickAsync();
+                await Assertions.Expect(configPage.Locator("#oidcSaveResult")).ToHaveTextAsync("Saved.");
+                var settings = await jellyfin.GetAsync("OidcLogin/Configuration", adminToken, cancellationToken);
+                Assert.Equal("Disabled", settings.GetProperty("configuration").GetProperty("localLoginPolicy").GetString());
+                var lockoutFacts = settings.GetProperty("lockoutFacts");
+                Assert.False(lockoutFacts.GetProperty("quickConnectEnabled").GetBoolean());
+                Assert.True(lockoutFacts.GetProperty("unlinkedUsers").GetProperty("administrators").GetInt32() >= 1);
+                using (var refused = await AuthenticateByNameAsync(jellyfin))
+                {
+                    Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+                }
+
+                await Assertions.Expect(disabled).ToBeCheckedAsync();
+                await allowed.CheckAsync();
+                await Assertions.Expect(warnings).ToBeEmptyAsync();
+                await configPage.GetByRole(AriaRole.Button, new() { Name = "Save" }).ClickAsync();
+                await Assertions.Expect(configPage.Locator("#oidcSaveResult")).ToHaveTextAsync("Saved.");
+            }
+            finally
+            {
+                await jellyfin.PostAsAdminAsync("System/Configuration", serverConfiguration, adminToken, CancellationToken.None);
+            }
+        });
 
         using var accepted = await AuthenticateByNameAsync(jellyfin);
         Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);

@@ -29,7 +29,7 @@ public sealed class LocalLoginPolicyFilterTests
 
     private readonly RecordingLogger<LocalLoginPolicyFilter> _logger = new();
 
-    private bool _local;
+    private readonly FakeLocalNetwork _localNetwork = new();
 
     [Fact]
     public void DisabledRefusesAuthenticateByNameWithA403()
@@ -50,7 +50,7 @@ public sealed class LocalLoginPolicyFilterTests
     public void RefusesLocalLoginByPolicyAndWhereTheRequestComesFrom(LocalLoginPolicy policy, bool local, bool refused)
     {
         _configuration.LocalLoginPolicy = policy;
-        _local = local;
+        _localNetwork.Local = local;
 
         Assert.Equal(refused, Filter("AuthenticateUserByName") is not null);
     }
@@ -70,7 +70,7 @@ public sealed class LocalLoginPolicyFilterTests
     [Theory]
     [InlineData("AuthenticateUserByName")]
     [InlineData("AuthenticateUser")]
-    public void RefusesBothPasswordLoginActions(string action)
+    public void RefusesBothLocalLoginActions(string action)
     {
         Assert.NotNull(Filter(action));
     }
@@ -159,7 +159,7 @@ public sealed class LocalLoginPolicyFilterTests
             new List<IFilterMetadata>(),
             new List<IValueProviderFactory>());
 
-        new LocalLoginPolicyFilter(() => _configuration, _ => _local, _logger).OnResourceExecuting(context);
+        new LocalLoginPolicyFilter(new LocalLoginPolicyCheck(() => _configuration, _localNetwork), _logger).OnResourceExecuting(context);
         return context.Result;
     }
 }

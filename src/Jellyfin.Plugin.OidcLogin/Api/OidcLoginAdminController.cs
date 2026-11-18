@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.Login;
-using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Configuration;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -27,7 +26,7 @@ public class OidcLoginAdminController : ControllerBase
     private readonly ConnectionTester _connectionTester;
     private readonly LinkedIdentityAdmin _linkedIdentities;
     private readonly IServerConfigurationManager _serverConfiguration;
-    private readonly Func<HttpContext, bool> _isLocal;
+    private readonly ILocalNetwork _localNetwork;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcLoginAdminController"/> class.
@@ -35,17 +34,17 @@ public class OidcLoginAdminController : ControllerBase
     /// <param name="connectionTester">Runs Test connection.</param>
     /// <param name="linkedIdentities">Lists, links and unlinks Linked Identities.</param>
     /// <param name="serverConfiguration">Jellyfin's server configuration, which says whether Quick Connect is on.</param>
-    /// <param name="networkManager">Jellyfin's network manager, which knows its local networks.</param>
+    /// <param name="localNetwork">Classifies requests as local the way Jellyfin does.</param>
     public OidcLoginAdminController(
         ConnectionTester connectionTester,
         LinkedIdentityAdmin linkedIdentities,
         IServerConfigurationManager serverConfiguration,
-        INetworkManager networkManager)
+        ILocalNetwork localNetwork)
     {
         _connectionTester = connectionTester;
         _linkedIdentities = linkedIdentities;
         _serverConfiguration = serverConfiguration;
-        _isLocal = LocalNetwork.Classifier(networkManager);
+        _localNetwork = localNetwork;
     }
 
     private static Plugin Plugin => Plugin.Instance ?? throw new InvalidOperationException("The Plugin is not loaded.");
@@ -55,8 +54,8 @@ public class OidcLoginAdminController : ControllerBase
     /// behind the Local Login Policy's lockout warnings.
     /// </summary>
     /// <returns>
-    /// <c>configuration</c>, <c>clientSecretSet</c>, <c>linkedIdentityCount</c>, <c>unlinkedUsers</c> (<c>count</c>,
-    /// <c>administrators</c>), <c>quickConnectEnabled</c> and <c>proxyNotTrusted</c>.
+    /// <c>configuration</c>, <c>clientSecretSet</c>, <c>linkedIdentityCount</c> and <c>lockoutFacts</c> (see
+    /// <see cref="LockoutFacts"/>).
     /// </returns>
     [HttpGet("Configuration")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -68,11 +67,7 @@ public class OidcLoginAdminController : ControllerBase
             configuration,
             clientSecretSet = !string.IsNullOrEmpty(configuration.ClientSecret),
             linkedIdentityCount = _linkedIdentities.List().Count,
-            unlinkedUsers = _linkedIdentities.CountUnlinkedUsers(),
-            quickConnectEnabled = _serverConfiguration.Configuration.QuickConnectAvailable,
-
-            // Jellyfin consumes X-Forwarded-For from a Known Proxy; left in place, the request's address is the proxy's.
-            proxyNotTrusted = Request.Headers.ContainsKey(ForwardedForHeader) && _isLocal(HttpContext),
+            lockoutFacts = LockoutFacts(),
         });
     }
 
@@ -184,6 +179,19 @@ public class OidcLoginAdminController : ControllerBase
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public ActionResult Unlink([FromRoute] Guid userId) => _linkedIdentities.Unlink(userId) ? NoContent() : NotFound();
+
+    /// <summary>
+    /// The read-only facts behind the configuration page's warnings before Local Login is restricted.
+    /// </summary>
+    /// <returns><c>unlinkedUsers</c> (<c>count</c>, <c>administrators</c>), <c>quickConnectEnabled</c> and <c>proxyNotTrusted</c>.</returns>
+    private object LockoutFacts() => new
+    {
+        unlinkedUsers = _linkedIdentities.CountUnlinkedUsers(),
+        quickConnectEnabled = _serverConfiguration.Configuration.QuickConnectAvailable,
+
+        // Jellyfin consumes X-Forwarded-For from a Known Proxy; left in place, the request's address is the proxy's.
+        proxyNotTrusted = Request.Headers.ContainsKey(ForwardedForHeader) && _localNetwork.IsLocal(HttpContext),
+    };
 
     /// <summary>
     /// Serializes <paramref name="value"/> with fixed camelCase names, independent of Jellyfin's MVC JSON settings.

@@ -4,7 +4,6 @@ using Jellyfin.Plugin.OidcLogin.Configuration;
 using Jellyfin.Plugin.OidcLogin.LocalLogin;
 using Jellyfin.Plugin.OidcLogin.Login;
 using Jellyfin.Plugin.OidcLogin.LoginEntryPoint;
-using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Library;
@@ -53,16 +52,13 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Jellyfin resolves event consumers from a scope per event; the store they get is the singleton.
         serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedConsumer>();
 
-        serviceCollection.AddSingleton(services => new BrandingFilter(
-            () => Plugin.Instance!.Configuration,
-            LocalNetwork.Classifier(services.GetRequiredService<INetworkManager>())));
-        serviceCollection.AddSingleton(services => new LocalLoginPolicyFilter(
-            () => Plugin.Instance!.Configuration,
-            LocalNetwork.Classifier(services.GetRequiredService<INetworkManager>()),
-            services.GetRequiredService<ILogger<LocalLoginPolicyFilter>>()));
+        serviceCollection.AddSingleton<ILocalNetwork, LocalNetwork>();
+        serviceCollection.AddSingleton(services => new LocalLoginPolicyCheck(() => Plugin.Instance!.Configuration, services.GetRequiredService<ILocalNetwork>()));
+        serviceCollection.AddSingleton(services => new BrandingFilter(() => Plugin.Instance!.Configuration, services.GetRequiredService<LocalLoginPolicyCheck>()));
+        serviceCollection.AddSingleton<LocalLoginPolicyFilter>();
 
         // Both run for every MVC request. The Branding filter acts only on the anonymous GET /Branding/Configuration,
-        // the Local Login Policy filter only on Jellyfin's password login actions, before model binding reads the body.
+        // the Local Login Policy filter only on Jellyfin's Local Login actions, before model binding reads the body.
         serviceCollection.Configure<MvcOptions>(options =>
         {
             options.Filters.AddService<BrandingFilter>();
