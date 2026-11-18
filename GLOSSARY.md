@@ -45,8 +45,12 @@ Signing in to Jellyfin's web UI by being redirected to the Identity Provider and
 _Avoid_: SSO login, external login
 
 **Local Login**:
-Jellyfin's built-in username-and-password sign-in, always kept available as a fallback.
+Jellyfin's built-in username-and-password sign-in; available as a fallback unless the admin restricts it to the local network or disables it.
 _Avoid_: password login, break-glass login
+
+**Local Login Policy**:
+The admin's choice of where Local Login is accepted: everywhere, only from Jellyfin's local network, or nowhere. It never restricts OIDC Login or Quick Connect.
+_Avoid_: disable password auth, password lockdown
 
 **Login Entry Point**:
 The place in Jellyfin's web UI where a person starts an OIDC Login.
